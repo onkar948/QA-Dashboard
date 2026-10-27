@@ -1,1 +1,983 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QA Bug Tracker V2</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="v2.css"><script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script></head><body><div id="app"></div><script src="config.js"></script><script src="app.js"></script></body></html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QA Tracker V2</title>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+:root {
+  --blue:#4338ca;--bg:#f5f7fb;--border:#dce2eb;
+  --text:#1e293b;--muted:#64748b;--red:#dc2626;
+  --green:#15803d;--orange:#c2410c
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+font:14px system-ui,Arial,sans-serif}
+header{background:var(--blue);color:white;padding:16px 24px;
+display:flex;justify-content:space-between;align-items:center;gap:12px}
+header h2{margin:0}
+main{max-width:1450px;margin:auto;padding:24px}
+nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+button{border:1px solid var(--border);background:white;
+padding:9px 14px;border-radius:7px;cursor:pointer}
+button:hover{background:#eef2ff}
+button.primary{background:var(--blue);color:white}
+button.danger{color:var(--red)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.card{background:white;border:1px solid var(--border);
+border-radius:12px;padding:20px;margin-bottom:18px}
+.cards{display:grid;grid-template-columns:
+repeat(auto-fit,minmax(180px,1fr));gap:14px}
+.metric{background:white;border:1px solid var(--border);
+border-radius:10px;padding:20px;text-align:left}
+.metric strong{display:block;font-size:30px;color:var(--blue)}
+.metric span{font-size:13px;color:var(--muted)}
+.metric small{display:block;margin-top:8px;color:var(--red)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{background:#1e293b;color:white;text-align:left}
+td,th{border-bottom:1px solid var(--border);padding:10px;vertical-align:top}
+.tablewrap{overflow:auto;max-width:100%}
+input,select,textarea{padding:9px;border:1px solid #cbd5e1;
+border-radius:6px;font:inherit}
+textarea{min-width:170px;min-height:65px}
+input[type=checkbox]{width:18px;height:18px}
+.controls{display:flex;gap:9px;flex-wrap:wrap;margin:14px 0}
+.badge{display:inline-block;border-radius:15px;padding:4px 9px;
+background:#e0e7ff;color:#3730a3;font-size:12px}
+.badge.fail{background:#fee2e2;color:#991b1b}
+.badge.pass{background:#dcfce7;color:#166534}
+.badge.blocked{background:#ffedd5;color:#9a3412}
+.muted{color:var(--muted)}
+.hidden{display:none!important}
+.login{max-width:420px;margin:10vh auto}
+.login input{width:100%;margin:8px 0}
+a{color:var(--blue)}
+@media(max-width:700px){main{padding:12px}header{padding:12px}}
+</style>
+</head>
+
+<body>
+<header>
+  <h2>QA Tracker V2</h2>
+  <span id="accountInfo">Firebase Cloud</span>
+</header>
+
+<main>
+  <section id="loginView" class="card login">
+    <h2>Sign in</h2>
+    <p class="muted">Use your existing Firebase account.</p>
+    <form id="loginForm">
+      <label>Email</label>
+      <input id="email" type="email" required
+        autocomplete="username">
+      <label>Password</label>
+      <input id="password" type="password" required
+        autocomplete="current-password">
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+    <p id="loginError" style="color:var(--red)"></p>
+  </section>
+
+  <section id="workspace" class="hidden">
+    <nav>
+      <button onclick="showDashboard()">Project Dashboard</button>
+      <button onclick="showFeatures()">Features</button>
+      <button onclick="downloadBackup()">Backup JSON</button>
+      <button onclick="signOut()">Sign out</button>
+    </nav>
+    <div id="content"></div>
+  </section>
+</main>
+
+<input type="file" id="excelInput" accept=".xlsx,.xls,.csv"
+  class="hidden">
+
+<script>
+"use strict";
+
+// Original Firebase project and document.
+const firebaseConfig = {
+  apiKey:"AIzaSyDewz5leNUAHLAL0_6rS0H2EHv58uRV20U",
+  authDomain:"qa-bug-tracker-b1d32.firebaseapp.com",
+  projectId:"qa-bug-tracker-b1d32",
+  storageBucket:"qa-bug-tracker-b1d32.firebasestorage.app",
+  messagingSenderId:"877599639764",
+  appId:"1:877599639764:web:385ff8dd00de26e43bd341"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const store = firebase.firestore();
+const docRef = store.collection("pocTracker").doc("mainData");
+
+const ADMIN_EMAIL = "onkar.joshi@infoteksoftware.com";
+
+let db = {customers:[]};
+let currentFeature = null;
+let currentModule = null;
+let currentCycle = null;
+let unsubscribe = null;
+let revision = null;
+let view = "dashboard";
+let defectOnlyBlocked = false;
+
+const $ = id => document.getElementById(id);
+const uid = () => crypto.randomUUID();
+const dateNow = () => new Date().toISOString();
+const clone = v => JSON.parse(JSON.stringify(v));
+const escapeHTML = v => String(v ?? "").replace(
+  /[&<>"']/g,c=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",
+    '"':"&quot;","'":"&#39;"
+  })[c]
+);
+const safeId = v => JSON.stringify(String(v));
+
+const finalStatuses = [
+  "Pass","Fail","Partially Pass","Blocked","Not Applicable"
+];
+const statuses = [
+  "Not Executed","In Progress",
+  ...finalStatuses
+];
+
+function feature() {
+  return db.customers.find(f=>f.id===currentFeature);
+}
+function module() {
+  return feature()?.pocs.find(m=>m.id===currentModule);
+}
+function cycle() {
+  return module()?.v2Cycles?.find(c=>c.id===currentCycle);
+}
+function latestCycle(m) {
+  return (m.v2Cycles||[]).find(c=>c.state==="In Progress")
+    || (m.v2Cycles||[]).at(-1);
+}
+function ensureV2(m) {
+  if (!m.v2Baseline) {
+    m.v2Baseline = clone(m.testCases||[]).map((t,i)=>({
+      ...t,
+      id:t.id||uid(),
+      testNo:t.testNo||i+1,
+      origin:"Initial Baseline"
+    }));
+  }
+  if (!m.v2Cycles) m.v2Cycles=[];
+  if (!m.v2ExecutionType) m.v2ExecutionType="Exploratory";
+}
+function blankTest(no,origin) {
+  return {
+    id:uid(),testNo:no,module:"",scenario:"",
+    execStep:"",expectedBehavior:"",
+    actualBehavior:"",comment:"",status:"Not Executed",
+    defect:"",blockedReason:"",origin
+  };
+}
+function resetTest(t) {
+  return {
+    ...clone(t),
+    status:"Not Executed",
+    actualBehavior:"",
+    comment:"",
+    blockedReason:""
+  };
+}
+function stats(cases=[]) {
+  return {
+    total:cases.length,
+    executed:cases.filter(t=>finalStatuses.includes(t.status)).length,
+    passed:cases.filter(t=>t.status==="Pass").length,
+    failed:cases.filter(t=>t.status==="Fail").length,
+    blocked:cases.filter(t=>t.status==="Blocked").length,
+    pending:cases.filter(t=>t.status==="Not Executed").length
+  };
+}
+function notify(message) { alert(message); }
+
+// Save the same Firestore document.
+// Optimistic revision check reduces stale saves, but this
+// remains unsuitable for simultaneous V1/V2 editing.
+async function save() {
+  const expectedRevision = revision;
+  const payload = clone(db);
+
+  try {
+    await store.runTransaction(async tx=>{
+      const snap = await tx.get(docRef);
+      if (!snap.exists) throw Error("Original database document missing.");
+
+      const actualRevision = snap.updateTime?.toMillis()||null;
+      if (expectedRevision !== actualRevision) {
+        throw Error("Cloud data changed. Reload before saving.");
+      }
+
+      tx.set(docRef,payload);
+    });
+  } catch(e) {
+    notify("Save failed: "+e.message);
+    throw e;
+  }
+}
+
+// Authentication
+$("loginForm").onsubmit = async event=>{
+  event.preventDefault();
+  $("loginError").textContent="";
+
+  try {
+    await auth.signInWithEmailAndPassword(
+      $("email").value.trim(),
+      $("password").value
+    );
+  } catch(e) {
+    $("loginError").textContent=e.message;
+  }
+};
+
+auth.onAuthStateChanged(user=>{
+  if(unsubscribe){unsubscribe();unsubscribe=null;}
+
+  if(!user){
+    $("loginView").classList.remove("hidden");
+    $("workspace").classList.add("hidden");
+    return;
+  }
+
+  if(!user.emailVerified ||
+     user.email?.toLowerCase()!==ADMIN_EMAIL){
+    $("loginError").textContent=
+      "This Firebase account is not authorized by the original rules.";
+    auth.signOut();
+    return;
+  }
+
+  $("loginView").classList.add("hidden");
+  $("workspace").classList.remove("hidden");
+  $("accountInfo").textContent="QA Workspace";
+
+  unsubscribe=docRef.onSnapshot(snap=>{
+    if(!snap.exists){
+      notify("Original Firestore document not found.");
+      return;
+    }
+    const incoming=snap.data();
+    if(!Array.isArray(incoming.customers)){
+      notify("Unexpected original database format.");
+      return;
+    }
+    db=incoming;
+    revision=snap.updateTime?.toMillis()||null;
+    render();
+  },e=>notify("Firestore access error: "+e.message));
+});
+
+async function signOut(){
+  await auth.signOut();
+}
+
+function content(html){$("content").innerHTML=html;}
+function render(){
+  if(view==="dashboard")showDashboard();
+  else if(view==="features")showFeatures();
+  else if(view==="feature")showFeature(currentFeature);
+  else if(view==="module")showModule(currentFeature,currentModule);
+  else if(view==="cycle")showCycle(currentCycle);
+  else if(view==="defects")showDefects(defectOnlyBlocked);
+}
+
+// Dashboard
+function allDefects(){
+  const rows=[];
+  for(const f of db.customers){
+    for(const m of f.pocs||[]){
+      const c=latestCycle(m);
+      if(!c)continue;
+      for(const t of c.cases||[]){
+        if(!t.defect && t.status!=="Blocked")continue;
+        rows.push({
+          feature:f.name,module:m.name,cycle:c.number,
+          testNo:t.testNo,defect:t.defect||"",
+          status:t.status,remark:t.comment||"",
+          reason:t.blockedReason||"",
+          blocker:t.status==="Blocked"
+        });
+      }
+    }
+  }
+  return rows;
+}
+function defectKey(row){
+  return row.defect.trim().toLowerCase();
+}
+function uniqueDefectCount(rows){
+  return new Set(rows.filter(r=>defectKey(r))
+    .map(defectKey)).size;
+}
+function showDashboard(){
+  view="dashboard";
+  let need=0,under=0,done=0;
+  let total=0,executed=0;
+  const summary=[];
+
+  for(const f of db.customers){
+    let fNeed=0,fUnder=0,fDone=0;
+    for(const m of f.pocs||[]){
+      const c=latestCycle(m);
+      const state=c?.state||"Not Started";
+      const s=stats(c?.cases);
+      total+=s.total;executed+=s.executed;
+      if(state==="Not Started")fNeed++;
+      if(state==="In Progress")fUnder++;
+      if(state==="Completed")fDone++;
+      summary.push({
+        f,m,c,state,s
+      });
+    }
+    if(fUnder)under++;
+    else if(fNeed)need++;
+    else if(fDone)done++;
+  }
+
+  const defects=allDefects();
+  const blocked=defects.filter(d=>d.blocker);
+  content(`
+    <h2>Project QA Dashboard</h2>
+    <div class="cards">
+      <button class="metric" onclick="showFeatures()">
+        <strong>${need}</strong><span>Features Need Testing</span>
+      </button>
+      <button class="metric" onclick="showFeatures()">
+        <strong>${under}</strong><span>Features Under Testing</span>
+      </button>
+      <button class="metric" onclick="showFeatures()">
+        <strong>${done}</strong><span>Completed Features</span>
+      </button>
+      <div class="metric">
+        <button onclick="showDefects(false)">
+          <strong>${uniqueDefectCount(defects)}</strong>
+          Total Defects
+        </button>
+        <button onclick="showDefects(true)">
+          <small>${uniqueDefectCount(blocked)} Blocked Defects</small>
+        </button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Current Cycle Summary — All Features</h3>
+      <div class="tablewrap"><table>
+      <thead><tr>
+        <th>Feature</th><th>Module</th><th>Type</th>
+        <th>Cycle</th><th>Status</th><th>Selected</th>
+        <th>Executed</th><th>Passed</th><th>Failed</th>
+        <th>Blocked</th>
+      </tr></thead><tbody>
+      ${summary.map(x=>`<tr>
+        <td>${escapeHTML(x.f.name)}</td>
+        <td>${escapeHTML(x.m.name)}</td>
+        <td>${escapeHTML(x.m.v2ExecutionType||"Not Set")}</td>
+        <td>${x.c?.number||"—"}</td>
+        <td>${escapeHTML(x.state)}</td>
+        <td>${x.s.total}</td><td>${x.s.executed}</td>
+        <td>${x.s.passed}</td><td>${x.s.failed}</td>
+        <td>${x.s.blocked}</td>
+      </tr>`).join("")}
+      </tbody></table></div>
+    </div>
+  `);
+}
+
+function showDefects(onlyBlocked=false){
+  view="defects";
+  defectOnlyBlocked=onlyBlocked;
+  const rows=allDefects().filter(r=>!onlyBlocked||r.blocker);
+
+  content(`
+    <div class="card">
+      <h2>${onlyBlocked?"Blocked Defects":"Total Defects"}</h2>
+      <div class="controls">
+        <button onclick="showDefects(false)">All Defects</button>
+        <button onclick="showDefects(true)">Blocked Defects</button>
+        <button onclick="exportDefects()">Export Excel</button>
+      </div>
+      <div class="tablewrap"><table>
+      <thead><tr>
+        <th>Feature</th><th>Module</th><th>Cycle</th>
+        <th>Test Case</th><th>Defect Reference</th>
+        <th>Status</th><th>Remark</th>
+        <th>Blocker</th><th>Blocked Reason</th>
+      </tr></thead><tbody>
+      ${rows.map(r=>`<tr>
+        <td>${escapeHTML(r.feature)}</td>
+        <td>${escapeHTML(r.module)}</td>
+        <td>${r.cycle}</td>
+        <td>${escapeHTML(r.testNo)}</td>
+        <td>${/^https:\/\//i.test(r.defect)
+          ? `<a href="${escapeHTML(r.defect)}" target="_blank"
+             rel="noopener noreferrer">${escapeHTML(r.defect)}</a>`
+          :escapeHTML(r.defect)}</td>
+        <td>${escapeHTML(r.status)}</td>
+        <td>${escapeHTML(r.remark)}</td>
+        <td>${r.blocker?"Yes":"No"}</td>
+        <td>${escapeHTML(r.reason)}</td>
+      </tr>`).join("")}
+      </tbody></table></div>
+    </div>
+  `);
+}
+function exportDefects(){
+  const rows=allDefects().filter(r=>
+    !defectOnlyBlocked||r.blocker);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    wb,XLSX.utils.json_to_sheet(rows),"Defects"
+  );
+  XLSX.writeFile(wb,"QA_Defects.xlsx");
+}
+
+// Features
+function showFeatures(){
+  view="features";
+  content(`
+    <h2>Features</h2>
+    <div class="controls">
+      <button class="primary" onclick="addFeature()">Add Feature</button>
+    </div>
+    <div class="cards">
+      ${db.customers.map(f=>`
+        <button class="metric" onclick='showFeature(${safeId(f.id)})'>
+          <strong style="font-size:20px">${escapeHTML(f.name)}</strong>
+          <span>${(f.pocs||[]).length} Modules</span>
+        </button>`).join("")}
+    </div>
+  `);
+}
+async function addFeature(){
+  const name=prompt("Feature name");
+  if(!name?.trim())return;
+  db.customers.push({
+    id:uid(),name:name.trim(),pocs:[]
+  });
+  await save();
+}
+function showFeature(id){
+  currentFeature=id;view="feature";
+  const f=feature();
+  if(!f)return showFeatures();
+  content(`
+    <div class="card">
+      <h2>${escapeHTML(f.name)}</h2>
+      <div class="controls">
+        <button onclick="showFeatures()">Back</button>
+        <button class="primary" onclick="addModule()">Add Module</button>
+      </div>
+      <div class="cards">
+        ${(f.pocs||[]).map(m=>{
+          const c=latestCycle(m);
+          return `<button class="metric"
+            onclick='showModule(${safeId(f.id)},${safeId(m.id)})'>
+            <strong style="font-size:19px">${escapeHTML(m.name)}</strong>
+            <span>${escapeHTML(c?.state||"Not Started")}</span>
+            <small>${escapeHTML(m.v2ExecutionType||"Type Not Set")}</small>
+          </button>`;
+        }).join("")}
+      </div>
+    </div>
+  `);
+}
+async function addModule(){
+  const name=prompt("Module name");
+  if(!name?.trim())return;
+  feature().pocs.push({
+    id:uid(),name:name.trim(),testCases:[],
+    v2Baseline:[],v2Cycles:[],
+    v2ExecutionType:"Exploratory"
+  });
+  await save();
+}
+
+// Module / baseline
+function showModule(fid,mid){
+  currentFeature=fid;currentModule=mid;
+  view="module";
+  const m=module();
+  if(!m)return showFeature(fid);
+
+  const baseline=m.v2Baseline||m.testCases||[];
+  const cycles=m.v2Cycles||[];
+  const current=latestCycle(m);
+
+  content(`
+    <div class="card">
+      <button onclick='showFeature(${safeId(fid)})'>Back</button>
+      <h2>${escapeHTML(feature().name)} / ${escapeHTML(m.name)}</h2>
+      <p>Master Baseline: ${baseline.length} test cases</p>
+      <label>Execution Type: </label>
+      <select id="executionType"
+        onchange="changeType(this.value)">
+        <option value="Exploratory"
+          ${(m.v2ExecutionType||"Exploratory")==="Exploratory"
+          ?"selected":""}>Exploratory</option>
+        <option value="Planned"
+          ${m.v2ExecutionType==="Planned"?"selected":""}>
+          Planned</option>
+      </select>
+      <div class="controls">
+        <button onclick="addBaselineCase()">Add Baseline Case</button>
+        <button onclick="uploadExcel()">Import Excel</button>
+        <button onclick="startCycle()">Start New Cycle</button>
+        <button onclick="exportCycles()">Export All Cycles</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Test Cycle History</h3>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Cycle</th><th>Started</th>
+        <th>Completed</th><th>Status</th><th>Test Cases</th>
+        <th>Executed</th><th>Open</th></tr></thead>
+        <tbody>
+        ${cycles.map(c=>`<tr>
+          <td>${c.number}</td>
+          <td>${escapeHTML(c.startedAt)}</td>
+          <td>${escapeHTML(c.completedAt||"—")}</td>
+          <td>${escapeHTML(c.state)}</td>
+          <td>${c.cases.length}</td>
+          <td>${stats(c.cases).executed}</td>
+          <td><button onclick='showCycle(${safeId(c.id)})'>
+            Open</button></td>
+        </tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h3>Master Test Case Baseline</h3>
+      <div class="tablewrap"><table>
+      <thead><tr><th>ID</th><th>Module</th><th>Scenario</th>
+      <th>Expected Result</th><th>Origin</th></tr></thead>
+      <tbody>
+      ${baseline.map(t=>`<tr>
+        <td>${escapeHTML(t.testNo)}</td>
+        <td>${escapeHTML(t.module)}</td>
+        <td>${escapeHTML(t.scenario)}</td>
+        <td>${escapeHTML(t.expectedBehavior)}</td>
+        <td>${escapeHTML(t.origin||"Initial Baseline")}</td>
+      </tr>`).join("")}
+      </tbody></table></div>
+    </div>
+  `);
+}
+async function changeType(type){
+  const m=module();
+  ensureV2(m);
+  m.v2ExecutionType=type;
+  await save();
+}
+async function addBaselineCase(){
+  const m=module();ensureV2(m);
+  const no=prompt("Test Case ID / Number");
+  if(!no?.trim())return;
+  if(m.v2Baseline.some(t=>String(t.testNo)===no.trim())){
+    return notify("Test Case ID already exists.");
+  }
+  const t=blankTest(no.trim(),"Added to Baseline");
+  t.module=prompt("Module","")||"";
+  t.scenario=prompt("Scenario","")||"";
+  t.expectedBehavior=prompt("Expected Result","")||"";
+  m.v2Baseline.push(t);
+  await save();
+}
+
+// Test cycle selection
+function startCycle(){
+  const m=module();ensureV2(m);
+  if(m.v2Cycles.some(c=>c.state==="In Progress")){
+    return notify("Complete the active cycle first.");
+  }
+  if(m.v2ExecutionType==="Planned"&&!m.v2Baseline.length){
+    return notify("Planned testing requires test cases.");
+  }
+
+  const previous=m.v2Cycles.at(-1);
+  const old=new Map((previous?.cases||[]).map(t=>[t.id,t]));
+
+  content(`
+    <div class="card">
+      <h2>Select Test Cases for Cycle ${m.v2Cycles.length+1}</h2>
+      <div class="controls">
+        <button onclick="selectCases('all')">All</button>
+        <button onclick="selectCases('fail')">Failed</button>
+        <button onclick="selectCases('blocked')">Blocked</button>
+        <button onclick="selectCases('both')">Failed + Blocked</button>
+        <button onclick="selectCases('none')">Clear</button>
+      </div>
+      <div class="tablewrap"><table>
+      <thead><tr><th>Select</th><th>Test Case</th>
+      <th>Scenario</th><th>Previous Status</th></tr></thead>
+      <tbody>
+      ${m.v2Baseline.map(t=>`<tr>
+        <td><input class="caseChoice" type="checkbox"
+          value="${escapeHTML(t.id)}" checked></td>
+        <td>${escapeHTML(t.testNo)}</td>
+        <td>${escapeHTML(t.scenario)}</td>
+        <td>${escapeHTML(old.get(t.id)?.status||"—")}</td>
+      </tr>`).join("")}
+      </tbody></table></div>
+      <div class="controls">
+        <button class="primary" onclick="createCycle()">
+          Start Execution</button>
+        <button onclick="showModule(currentFeature,currentModule)">
+          Cancel</button>
+      </div>
+    </div>
+  `);
+}
+function selectCases(which){
+  const m=module();
+  const previous=m.v2Cycles.at(-1);
+  const old=new Map((previous?.cases||[]).map(t=>[t.id,t]));
+
+  document.querySelectorAll(".caseChoice").forEach(box=>{
+    const status=old.get(box.value)?.status;
+    box.checked=which==="all" ||
+      (which==="fail"&&status==="Fail") ||
+      (which==="blocked"&&status==="Blocked") ||
+      (which==="both"&&["Fail","Blocked"].includes(status));
+  });
+}
+async function createCycle(){
+  const m=module();
+  const selected=new Set(
+    [...document.querySelectorAll(".caseChoice:checked")]
+      .map(x=>x.value)
+  );
+  if(m.v2ExecutionType==="Planned"&&!selected.size){
+    return notify("Select test cases before starting Planned testing.");
+  }
+
+  const c={
+    id:uid(),
+    number:m.v2Cycles.length+1,
+    startedAt:dateNow(),
+    completedAt:null,
+    completionRemark:"",
+    state:"In Progress",
+    cases:m.v2Baseline.filter(t=>selected.has(t.id)).map(resetTest)
+  };
+  m.v2Cycles.push(c);
+  currentCycle=c.id;
+  await save();
+  showCycle(c.id);
+}
+
+// Execution
+const columns=[
+  ["testNo","Test Case ID"],
+  ["module","Module"],
+  ["scenario","Scenario"],
+  ["execStep","Execution Steps"],
+  ["expectedBehavior","Expected Result"],
+  ["actualBehavior","Actual Result"],
+  ["comment","Remark"],
+  ["defect","Defect Reference"],
+  ["blockedReason","Blocked Reason"],
+  ["status","Status"]
+];
+
+function showCycle(id){
+  currentCycle=id;view="cycle";
+  const c=cycle();
+  if(!c)return showModule(currentFeature,currentModule);
+  const editable=c.state==="In Progress";
+  const s=stats(c.cases);
+
+  content(`
+    <div class="card">
+      <button onclick="showModule(currentFeature,currentModule)">
+        Back to Module</button>
+      <h2>Cycle ${c.number} — ${escapeHTML(c.state)}</h2>
+      <p>Started: ${escapeHTML(c.startedAt)}</p>
+      <p>Selected: ${s.total} |
+         Executed: ${s.executed} |
+         Passed: ${s.passed} |
+         Failed: ${s.failed} |
+         Blocked: ${s.blocked}</p>
+      <div class="controls">
+        ${editable?`
+          <button onclick="addCycleCase()">Add Test Case</button>
+          <button onclick="uploadExcel()">Import Excel</button>
+          <button class="primary" onclick="completeCycle()">
+            Complete Cycle</button>`:""}
+        <button onclick="exportCycles()">Export All Cycles</button>
+      </div>
+      ${!editable?`<p>Completion Remark:
+        ${escapeHTML(c.completionRemark)}</p>`:""}
+    </div>
+    <div class="card">
+      <h3>Execution Test Cases</h3>
+      <div class="tablewrap"><table>
+      <thead><tr>
+        ${columns.map(x=>`<th>${x[1]}</th>`).join("")}
+      </tr></thead>
+      <tbody>
+      ${c.cases.map(t=>`<tr>
+        ${columns.map(([key])=>`<td>
+          ${renderCell(t,key,editable)}
+        </td>`).join("")}
+      </tr>`).join("")}
+      </tbody></table></div>
+    </div>
+  `);
+}
+function renderCell(t,key,editable){
+  const value=String(t[key]??"");
+  if(!editable||key==="testNo"){
+    if(key==="defect"&&/^https:\/\//i.test(value)){
+      return `<a href="${escapeHTML(value)}" target="_blank"
+        rel="noopener noreferrer">${escapeHTML(value)}</a>`;
+    }
+    return escapeHTML(value);
+  }
+  if(key==="status"){
+    return `<select onchange='updateCell(${safeId(t.id)},
+      "status",this.value)'>
+      ${statuses.map(s=>`<option value="${s}"
+        ${s===value?"selected":""}>${s}</option>`).join("")}
+    </select>`;
+  }
+  return `<textarea onblur='updateCell(${safeId(t.id)},
+    ${safeId(key)},this.value)'>${escapeHTML(value)}</textarea>`;
+}
+async function updateCell(id,key,value){
+  const c=cycle();
+  if(c?.state!=="In Progress")return;
+  const t=c.cases.find(x=>x.id===id);
+  if(!t)return;
+
+  if(key==="status"&&value==="Blocked"&&!t.blockedReason?.trim()){
+    notify("Enter Blocked Reason before selecting Blocked.");
+    showCycle(c.id);
+    return;
+  }
+
+  t[key]=value;
+  if(key==="status"&&value!=="Blocked")t.blockedReason="";
+
+  // Keep baseline definition in sync, but preserve cycle history.
+  if(["module","scenario","execStep","expectedBehavior","defect"]
+    .includes(key)){
+    const base=module().v2Baseline?.find(x=>x.id===id);
+    if(base)base[key]=value;
+  }
+  await save();
+  if(key==="status")showCycle(c.id);
+}
+async function addCycleCase(){
+  const m=module(),c=cycle();
+  if(c?.state!=="In Progress")return;
+  const no=prompt("New Test Case ID");
+  if(!no?.trim())return;
+  if(m.v2Baseline.some(t=>String(t.testNo)===no.trim())){
+    return notify("Test Case ID already exists.");
+  }
+  const t=blankTest(no.trim(),`Added in Test Cycle ${c.number}`);
+  t.module=prompt("Module","")||"";
+  t.scenario=prompt("Scenario","")||"";
+  t.expectedBehavior=prompt("Expected Result","")||"";
+  m.v2Baseline.push(clone(t));
+  c.cases.push(t);
+  await save();
+  showCycle(c.id);
+}
+async function completeCycle(){
+  const c=cycle();
+  if(c?.state!=="In Progress")return;
+  const remark=prompt(
+    "Enter completion remark. Pending or blocked cases may remain."
+  );
+  if(!remark?.trim())return;
+  if(!confirm("Complete this cycle? Results become read-only."))return;
+  c.state="Completed";
+  c.completedAt=dateNow();
+  c.completionRemark=remark.trim();
+  await save();
+  showCycle(c.id);
+}
+
+// Excel import
+function uploadExcel(){
+  const input=$("excelInput");
+  input.value="";
+  input.onchange=importExcel;
+  input.click();
+}
+const aliases={
+  testNo:["srno","serialno","testno","testcaseid","testid"],
+  module:["module","feature"],
+  scenario:["scenario","testscenario","description"],
+  execStep:["executionstep","executionsteps","steps"],
+  expectedBehavior:["expectedbehavior","expectedresult","expected"],
+  actualBehavior:["actualbehavior","actualresult","actual"],
+  comment:["comment","remark","comments"],
+  defect:["defect","defectreference","defectnumber","bugid"],
+  blockedReason:["blockedreason","blockerreason"],
+  status:["status","teststatus"]
+};
+function norm(v){
+  return String(v||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+}
+async function importExcel(event){
+  const file=event.target.files[0];
+  if(!file)return;
+  const m=module();
+  if(!m)return;
+  ensureV2(m);
+  const c=cycle();
+  if(view==="cycle"&&c?.state==="Completed"){
+    return notify("Cannot import into a completed cycle.");
+  }
+
+  try{
+    const buffer=await file.arrayBuffer();
+    const workbook=XLSX.read(buffer,{type:"array"});
+    const incoming=[];
+
+    for(const sheetName of workbook.SheetNames){
+      const rows=XLSX.utils.sheet_to_json(
+        workbook.Sheets[sheetName],{defval:"",raw:false}
+      );
+      if(!rows.length)continue;
+      const headers=Object.keys(rows[0]);
+      const map={};
+      for(const [field,names] of Object.entries(aliases)){
+        map[field]=headers.find(h=>names.includes(norm(h)));
+      }
+      if(!map.testNo||!map.scenario){
+        throw Error("Missing Test Case ID or Scenario column in "+
+          sheetName);
+      }
+      for(const row of rows){
+        const t={};
+        for(const field of Object.keys(aliases)){
+          t[field]=map[field]?String(row[map[field]]??"").trim():"";
+        }
+        if(t.testNo)incoming.push(t);
+      }
+    }
+
+    const ids=new Set();
+    for(const t of incoming){
+      const key=norm(t.testNo);
+      if(ids.has(key))throw Error("Duplicate ID in upload: "+t.testNo);
+      ids.add(key);
+    }
+
+    if(!confirm(`Import ${incoming.length} test cases?
+Existing test cases will be updated by ID.
+Execution results will not be overwritten.`))return;
+
+    let added=0,updated=0;
+    for(const row of incoming){
+      let base=m.v2Baseline.find(t=>
+        norm(t.testNo)===norm(row.testNo));
+      if(!base){
+        base=blankTest(row.testNo,c
+          ?`Added in Test Cycle ${c.number}`
+          :"Imported to Baseline");
+        m.v2Baseline.push(base);
+        added++;
+      }else updated++;
+
+      for(const field of [
+        "module","scenario","execStep",
+        "expectedBehavior","defect"
+      ]){
+        if(row[field])base[field]=row[field];
+      }
+
+      if(c?.state==="In Progress"){
+        let current=c.cases.find(t=>t.id===base.id);
+        if(!current){
+          current=resetTest(base);
+          c.cases.push(current);
+        }
+        for(const field of [
+          "module","scenario","execStep",
+          "expectedBehavior","defect"
+        ]){
+          if(row[field])current[field]=row[field];
+        }
+      }
+    }
+    await save();
+    notify(`${added} added, ${updated} matched.`);
+    render();
+  }catch(e){
+    notify("Import failed: "+e.message);
+  }
+}
+
+// Export all test cycles, one worksheet per cycle
+function exportCycles(){
+  const m=module();
+  if(!m)return;
+  const wb=XLSX.utils.book_new();
+  const summary=(m.v2Cycles||[]).map(c=>({
+    Feature:feature().name,
+    Module:m.name,
+    Type:m.v2ExecutionType,
+    Cycle:c.number,
+    Started:c.startedAt,
+    Completed:c.completedAt||"",
+    State:c.state,
+    CompletionRemark:c.completionRemark||"",
+    ...stats(c.cases)
+  }));
+  XLSX.utils.book_append_sheet(
+    wb,XLSX.utils.json_to_sheet(
+      summary.length?summary:[{Note:"No cycles"}]
+    ),"Summary"
+  );
+  for(const c of m.v2Cycles||[]){
+    const rows=c.cases.map(t=>({
+      "Test Case ID":t.testNo,
+      Module:t.module,
+      Scenario:t.scenario,
+      "Execution Steps":t.execStep,
+      "Expected Result":t.expectedBehavior,
+      "Actual Result":t.actualBehavior,
+      Remark:t.comment,
+      "Defect Reference":t.defect,
+      "Blocked Reason":t.blockedReason,
+      Status:t.status,
+      Origin:t.origin
+    }));
+    XLSX.utils.book_append_sheet(
+      wb,XLSX.utils.json_to_sheet(
+        rows.length?rows:[{Note:"No test cases"}]
+      ),`Cycle ${c.number}`.slice(0,31)
+    );
+  }
+  XLSX.writeFile(wb,
+    `${feature().name}_${m.name}_All_Cycles.xlsx`
+      .replace(/[\\/:*?"<>|]/g,"_"));
+}
+function downloadBackup(){
+  const blob=new Blob([JSON.stringify(db,null,2)],
+    {type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download="QA-Tracker-Backup.json";a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>

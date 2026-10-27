@@ -1,23 +1,19 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function admin() {
-      return request.auth != null && request.auth.token.email_verified == true
-        && request.auth.token.email == 'qa-admin@YOUR-COMPANY-DOMAIN.com';
-    }
-    function tester() {
-      return request.auth != null && request.auth.token.email_verified == true
-        && request.auth.token.email == 'qa-tester@YOUR-COMPANY-DOMAIN.com';
+    function sharedAccount() {
+      return request.auth != null
+        && request.auth.uid == 'REPLACE_WITH_YOUR_FIREBASE_AUTH_UID';
     }
     match /qaTrackerV2/main {
-      allow read: if admin() || tester();
-      allow create, update: if admin() || tester();
-      allow delete: if admin();
+      allow read, write: if sharedAccount();
     }
     match /qaTrackerV2/publicSummary {
       allow read: if true;
-      allow create, update: if admin() || tester();
-      allow delete: if admin();
+      allow write: if sharedAccount();
+    }
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

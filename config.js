@@ -9,5 +9,5 @@ const APP_CONFIG = {
     messagingSenderId: '877599639764',
     appId: '1:877599639764:web:385ff8dd00de26e43bd341'
   },
-  accountEmail: 'REPLACE_WITH_YOUR_EXISTING_FIREBASE_ACCOUNT_EMAIL'
+ firebaseAccountEmail: "onkar.joshi@infoteksoftware.com"
 };

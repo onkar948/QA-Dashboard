@@ -1,1870 +1,1416 @@
-// ============================================================
-// POC Test Tracker — Firebase Cloud Version
-// ============================================================
 
-// =============================================
-// 🔥 FIREBASE CONFIG
-// =============================================
-// const firebaseConfig = {
-//     apiKey: "AIzaSyBYhQsnq3fLPlLjYNNHuftuZDd3BUAwOYg",
-//     authDomain: "poc-tracker-46580.firebaseapp.com",
-//     projectId: "poc-tracker-46580",
-//     storageBucket: "poc-tracker-46580.firebasestorage.app",
-//     messagingSenderId: "568469845077",
-//     appId: "1:568469845077:web:f80225c4a1bd6e640a10dc",
-//     measurementId: "G-HM82QL40RG"
-// };
+'use strict';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDewz5leNUAHLAL0_6rS0H2EHv58uRV20U",
-  authDomain: "qa-bug-tracker-b1d32.firebaseapp.com",
-  projectId: "qa-bug-tracker-b1d32",
-  storageBucket: "qa-bug-tracker-b1d32.firebasestorage.app",
-  messagingSenderId: "877599639764",
-  appId: "1:877599639764:web:385ff8dd00de26e43bd341",
-  measurementId: "G-162QNWW0Z3"
-}
-// ---------- Firebase Init ----------
-firebase.initializeApp(firebaseConfig);
-const firestore = firebase.firestore();
-const firebaseAuth = firebase.auth();
-const DB_DOC = firestore.collection('pocTracker').doc('mainData');
-const TRACKER_ADMIN_EMAIL = 'onkar.joshi@infoteksoftware.com';
+// QA Bug Tracker V2
+// Requires config.js, Firebase compat SDKs and SheetJS.
 
-// ---------- State ----------
-let db = { customers: [] };
-let currentCustomerId = null;
-let currentPocId = null;
-let modalCallback = null;
-let isLoading = true;
-let isAdmin = false;
-let activeCustomerKey = null;
-let tableScrollSyncing = false;
-let tableScrollProxyInitialized = false;
-let dashboardFeatureFilter = null;
-let dashboardCustomerFilter = 'all';
-let cloudUnsubscribe = null;
-let hasUnrecognizedCloudData = false;
+firebase.initializeApp(APP_CONFIG.firebase);
 
-const DEFAULT_TEST_COLUMNS = [
-    'Sr. No.', 'Module', 'Scenario', 'Execution Step',
-    'Expected Behavior', 'Actual Behavior', 'Comment', 'Status'
+const auth = firebase.auth();
+const fs = firebase.firestore();
+
+const privateDoc = fs.doc('qaTrackerV2/main');
+const publicDoc = fs.doc('qaTrackerV2/publicSummary');
+
+let data = { features: [] };
+let publicData = { features: [], defectRows: [], updatedAt: null };
+
+let role = 'guest';
+let screen = 'landing';
+let featureId = null;
+let cycleId = null;
+let unsub = null;
+let unsubPublic = null;
+
+let defectFilter = 'all';
+let caseFilter = 'all';
+let selected = new Set();
+let searchText = '';
+let requestedRole = 'admin';
+let featureStatusFilter = 'In Progress';
+
+const $ = id => document.getElementById(id);
+
+const safe = value => String(value ?? '').replace(
+  /[&<>"']/g,
+  char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[char]
+);
+
+const id = () => crypto.randomUUID();
+const today = () => new Date().toISOString().slice(0, 10);
+const clone = object => JSON.parse(JSON.stringify(object));
+
+const STATUS = [
+  'Not Executed',
+  'In Progress',
+  'Pass',
+  'Fail',
+  'Partially Pass',
+  'Blocked',
+  'Not Applicable'
 ];
-const FINAL_TEST_STATUSES = ['Pass', 'Fail', 'Partially Pass', 'Blocked', 'Not Applicable'];
-const RESULT_TEST_STATUSES = ['Pass', 'Fail', 'Partially Pass', 'Blocked'];
 
-function normalizeHeader(header) {
-    return String(header || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const fields = [
+  'testId', 'module', 'scenario', 'steps',
+  'expected', 'actual', 'remark', 'defect',
+  'blockedReason', 'status'
+];
+
+const labels = {
+  testId: 'Test Case ID',
+  module: 'Module',
+  scenario: 'Scenario',
+  steps: 'Execution Steps',
+  expected: 'Expected Result',
+  actual: 'Actual Result',
+  remark: 'Remark',
+  defect: 'Defect Reference',
+  blockedReason: 'Blocked Reason',
+  status: 'Status'
+};
+
+const hasRole = () => role === 'admin' || role === 'tester';
+
+const getFeature = () =>
+  data.features.find(f => f.id === featureId);
+
+const getCycle = () =>
+  getFeature()?.cycles.find(c => c.id === cycleId);
+
+const active = feature =>
+  feature.cycles.find(c => c.status === 'In Progress');
+
+const latest = feature =>
+  active(feature) || feature.cycles.at(-1);
+
+function blankCase(testId = '', module = '', scenario = '') {
+  return {
+    id: id(),
+    testId,
+    module,
+    scenario,
+    steps: '',
+    expected: '',
+    actual: '',
+    remark: '',
+    defect: '',
+    blockedReason: '',
+    status: 'Not Executed',
+    origin: 'Baseline'
+  };
 }
 
-function getColumnKind(header) {
-    const key = normalizeHeader(header);
-    if (['srno', 'serialno', 'serialnumber', 'testno', 'testnumber'].includes(key)) return 'testNo';
-    if (key === 'status' || key === 'teststatus') return 'status';
-    if (['module', 'component', 'feature', 'area'].some(term => key.includes(term))) return 'module';
-    if (['scenario', 'testcase', 'description', 'title', 'name'].some(term => key.includes(term))) return 'scenario';
-    if (['executionstep', 'execstep', 'procedure', 'action', 'steps'].some(term => key.includes(term))) return 'execStep';
-    if (['expectedbehavior', 'expectedresult', 'expected', 'expect'].some(term => key.includes(term))) return 'expectedBehavior';
-    if (['actualbehavior', 'actualresult', 'actual', 'observed'].some(term => key.includes(term))) return 'actualBehavior';
-    if (['comment', 'note', 'remark', 'observation'].some(term => key.includes(term))) return 'comment';
-    return null;
+// New cycle: preserve test definition and defect reference.
+// Clear execution results, remarks and blocked reason.
+function resetCase(testCase) {
+  const result = clone(testCase);
+  result.status = 'Not Executed';
+  result.actual = '';
+  result.remark = '';
+  result.blockedReason = '';
+  return result;
 }
 
-function findImportHeaderRow(rows) {
-    const searchLimit = Math.min(rows.length, 20);
-    for (let rowIndex = 0; rowIndex < searchLimit; rowIndex++) {
-        const headers = (rows[rowIndex] || []).map(value => String(value ?? '').trim());
-        const nonEmptyHeaders = headers.filter(Boolean);
-        const hasStatus = nonEmptyHeaders.some(header => getColumnKind(header) === 'status');
-        const hasTestCaseField = nonEmptyHeaders.some(header => {
-            const kind = getColumnKind(header);
-            return kind && kind !== 'status';
+function counts(cases = []) {
+  const executedStatuses = [
+    'Pass', 'Fail', 'Partially Pass',
+    'Blocked', 'Not Applicable'
+  ];
+
+  return {
+    total: cases.length,
+    executed: cases.filter(c =>
+      executedStatuses.includes(c.status)
+    ).length,
+    passed: cases.filter(c => c.status === 'Pass').length,
+    failed: cases.filter(c => c.status === 'Fail').length,
+    blocked: cases.filter(c => c.status === 'Blocked').length,
+    pending: cases.filter(c =>
+      c.status === 'Not Executed'
+    ).length
+  };
+}
+
+function defectRows(features, onlyCurrent = true) {
+  const rows = [];
+
+  for (const feature of features) {
+    const cycles = onlyCurrent
+      ? [latest(feature)].filter(Boolean)
+      : feature.cycles;
+
+    for (const cycle of cycles) {
+      for (const tc of cycle.cases) {
+        if (!tc.defect?.trim() && tc.status !== 'Blocked') {
+          continue;
+        }
+
+        const reference = tc.defect || '';
+
+        rows.push({
+          feature: feature.name,
+          featureId: feature.id,
+          cycle: cycle.number,
+          testId: tc.testId,
+          defect: reference,
+          status: tc.status,
+          remark: tc.remark || '',
+          blockedReason: tc.blockedReason || '',
+          blocker: tc.status === 'Blocked',
+          url: /^https:\/\//i.test(reference)
+            ? reference : ''
         });
-        if (hasStatus && hasTestCaseField) return { rowIndex, headers };
+      }
     }
-    return null;
+  }
+
+  return rows;
 }
 
-function getPocColumns(poc) {
-    return Array.isArray(poc.columns) && poc.columns.length ? poc.columns : DEFAULT_TEST_COLUMNS;
+function uniqueDefects(rows) {
+  return new Set(
+    rows.filter(r => r.defect.trim())
+      .map(r => r.defect.trim().toLowerCase())
+  ).size;
 }
 
-function getTestCaseValue(testCase, header) {
-    const kind = getColumnKind(header);
-    if (kind === 'status') return testCase.status || (testCase.values && testCase.values[header]) || 'Not Executed';
-    if (kind === 'testNo') return testCase.testNo ?? (testCase.values && testCase.values[header]) ?? '';
-    if (testCase.values && Object.prototype.hasOwnProperty.call(testCase.values, header)) {
-        return testCase.values[header];
-    }
-    return kind ? (testCase[kind] ?? '') : '';
+function publicSummary() {
+  const features = data.features.map(feature => {
+    const cycle = latest(feature);
+    const n = counts(cycle?.cases);
+    const rows = defectRows([feature]);
+
+    return {
+      id: feature.id,
+      name: feature.name,
+      type: feature.type,
+      cycle: cycle?.number || 0,
+      status: cycle?.status || 'Not Started',
+      startedAt: cycle?.startedAt || '',
+      completedAt: cycle?.completedAt || '',
+      ...n,
+      defects: uniqueDefects(rows),
+      blockedDefects: uniqueDefects(
+        rows.filter(r => r.blocker)
+      )
+    };
+  });
+
+  return {
+    features,
+    defectRows: defectRows(data.features),
+    updatedAt: new Date().toISOString()
+  };
 }
 
-function getFeatureName(testCase, columns) {
-    const featureColumn = columns.find(column => getColumnKind(column) === 'module');
-    return String(featureColumn ? getTestCaseValue(testCase, featureColumn) : testCase.module || '').trim() || 'Unassigned';
-}
+async function save() {
+  if (!hasRole()) {
+    throw Error('Sign in first');
+  }
 
-function isFinalTestStatus(status) {
-    return FINAL_TEST_STATUSES.includes(status);
-}
+  await privateDoc.set(data);
 
-function hasTestCaseResults(testCase, columns) {
-    const expectedColumn = columns.find(column => getColumnKind(column) === 'expectedBehavior');
-    const actualColumn = columns.find(column => getColumnKind(column) === 'actualBehavior');
-    return Boolean(
-        expectedColumn &&
-        actualColumn &&
-        String(getTestCaseValue(testCase, expectedColumn) ?? '').trim() &&
-        String(getTestCaseValue(testCase, actualColumn) ?? '').trim()
+  try {
+    await publicDoc.set(publicSummary());
+  } catch (error) {
+    console.error('Dashboard publishing failed', error);
+    alert(
+      'Data saved, but public dashboard publishing failed: ' +
+      error.message
     );
+  }
 }
 
-function updateExecutionState(poc) {
-    if (!poc.executionStartedAt) return;
-    const complete = poc.testCases.length > 0 && poc.testCases.every(testCase => isFinalTestStatus(testCase.status));
-    poc.executionStatus = complete ? 'Completed' : 'In Progress';
-    poc.executionCompletedAt = complete ? (poc.executionCompletedAt || new Date().toISOString()) : null;
+function bindPublic() {
+  if (unsubPublic) unsubPublic();
+
+  unsubPublic = publicDoc.onSnapshot(
+    snapshot => {
+      publicData = snapshot.exists
+        ? snapshot.data()
+        : { features: [], defectRows: [] };
+
+      if (
+        ['dashboard', 'defects', 'featureStatus'].includes(screen) &&
+        role === 'guest'
+      ) {
+        render();
+      }
+    },
+    error => console.error('Public dashboard error', error)
+  );
 }
 
-function getFeatureExecutionState(feature) {
-    if (!feature.executionStartedAt) return 'not-tested';
-    const complete = feature.testCases.length > 0 && feature.testCases.every(testCase => isFinalTestStatus(testCase.status));
-    return complete ? 'completed' : 'under-test';
+function bindPrivate() {
+  if (unsub) unsub();
+
+  unsub = privateDoc.onSnapshot(
+    snapshot => {
+      data = snapshot.exists &&
+        Array.isArray(snapshot.data()?.features)
+        ? snapshot.data()
+        : { features: [] };
+
+      if (!snapshot.exists && role === 'admin') {
+        save().catch(console.error);
+      }
+
+      if (!['login', 'landing'].includes(screen)) {
+        render();
+      }
+    },
+    error => alert('Cloud data access failed: ' + error.message)
+  );
 }
 
-// ---------- Multi-Tenancy & Privacy (Customer Isolation) ----------
-function detectCustomerFromURL() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const key = urlParams.get('c') || urlParams.get('customer') || urlParams.get('client');
-    if (key) {
-        activeCustomerKey = key.trim();
-    }
+function go(next) {
+  screen = next;
+  render();
 }
 
-function ensureCustomerAccessKeys() {
-    let changed = false;
-    db.customers.forEach(c => {
-        if (!c.accessKey) {
-            const slug = (c.name || 'client').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'client';
-            c.accessKey = slug + '_' + Math.random().toString(36).substring(2, 7);
-            changed = true;
-        }
-    });
-    if (changed) {
-        saveData();
-    }
+function button(text, action, cls = 'secondary') {
+  return `<button class="${cls}" onclick="${action}">${safe(text)}</button>`;
 }
 
-function getVisibleCustomers() {
-    if (isAdmin) {
-        return db.customers;
-    }
-    if (activeCustomerKey) {
-        return db.customers.filter(c => c.accessKey === activeCustomerKey || c.id === activeCustomerKey);
-    }
-    return [];
-}
-
-function getShareableLink(customer) {
-    const base = window.location.origin + window.location.pathname;
-    return `${base}?c=${customer.accessKey}`;
-}
-
-function copyCustomerLink(customerId) {
-    const cust = getCustomer(customerId);
-    if (!cust) return;
-    const link = getShareableLink(cust);
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(link).then(() => {
-            toast(`Private link copied for ${cust.name}! Competitors cannot see this.`, 'success');
-        }).catch(() => {
-            prompt('Copy this feature link:', link);
-        });
-    } else {
-        prompt('Copy this feature link:', link);
-    }
-}
-
-function copyCurrentCustomerLink() {
-    if (currentCustomerId) {
-        copyCustomerLink(currentCustomerId);
-    }
-}
-
-function submitAccessCode() {
-    const input = document.getElementById('manualAccessCodeInput');
-    if (!input || !input.value.trim()) return;
-    const code = input.value.trim();
-
-    // Check if user entered a Feature Access Code.
-    const found = db.customers.find(c => c.accessKey === code || c.id === code || (c.name && c.name.toLowerCase() === code.toLowerCase()));
-    if (found) {
-        activeCustomerKey = found.accessKey;
-        const newUrl = window.location.pathname + '?c=' + found.accessKey;
-        window.history.pushState({}, '', newUrl);
-        input.value = '';
-        refreshCurrentView();
-        toast(`Welcome, ${found.name}!`, 'success');
-    } else {
-        toast('Invalid code or password. Please try again.', 'error');
-    }
-}
-
-// ---------- Admin Access ----------
-function toggleAdminMode() {
-    if (!isAuthorizedTrackerAdmin(firebaseAuth.currentUser)) {
-        toast('Admin access is available only to the authorized signed-in account.', 'error');
-        return;
-    }
-    isAdmin = !isAdmin;
-    updateAdminUI();
-    refreshCurrentView();
-    toast(isAdmin ? 'Admin mode activated.' : 'Admin mode deactivated.', 'info');
-}
-
-function isAuthorizedTrackerAdmin(user) {
-    return Boolean(user && user.emailVerified && user.email
-        && user.email.toLowerCase() === TRACKER_ADMIN_EMAIL);
-}
-
-function updateAdminUI() {
-    const adminControls = document.getElementById('adminControls');
-    const adminToggleBtn = document.getElementById('adminToggleBtn');
-    const adminToggleIcon = document.getElementById('adminToggleIcon');
-    const adminToggleText = document.getElementById('adminToggleText');
-    const sidebarAddCustBtn = document.getElementById('sidebarAddCustBtn');
-    const customerAdminActions = document.getElementById('customerAdminActions');
-    const pocAdminActions = document.getElementById('pocAdminActions');
-    const columnAdminActions = document.getElementById('columnAdminActions');
-
-    if (adminControls) adminControls.style.display = isAdmin ? 'flex' : 'none';
-    if (sidebarAddCustBtn) sidebarAddCustBtn.style.display = isAdmin ? 'inline-flex' : 'none';
-    if (customerAdminActions) customerAdminActions.style.display = isAdmin ? 'flex' : 'none';
-    if (pocAdminActions) pocAdminActions.style.display = isAdmin ? 'flex' : 'none';
-    if (columnAdminActions) columnAdminActions.style.display = isAdmin ? 'flex' : 'none';
-
-    if (adminToggleBtn) {
-        if (isAdmin) {
-            // Green when active
-            adminToggleBtn.className = 'btn btn-success';
-            adminToggleBtn.title = 'Admin Active (Click to deactivate)';
-            if (adminToggleIcon) adminToggleIcon.className = 'fas fa-lock-open';
-            if (adminToggleText) adminToggleText.textContent = 'Admin Active';
-        } else {
-            // Normal color when inactive
-            adminToggleBtn.className = 'btn btn-outline';
-            adminToggleBtn.title = 'Click to activate Admin Mode';
-            if (adminToggleIcon) adminToggleIcon.className = 'fas fa-lock';
-            if (adminToggleText) adminToggleText.textContent = 'Admin';
-        }
-    }
-
-    // Re-render table if in POC view to toggle Actions column & delete buttons
-    if (currentPocId && currentCustomerId) {
-        renderTestCases();
-    }
-}
-
-// ---------- Init ----------
-document.addEventListener('DOMContentLoaded', () => {
-    detectCustomerFromURL();
-    const signInForm = document.getElementById('signInForm');
-    if (signInForm) signInForm.addEventListener('submit', signInToCloud);
-
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('demo') === '1' || urlParams.get('demo') === '2') {
-        db = {
-            customers: [{
-                id: 'c1',
-                name: 'Acme Corp',
-                accessKey: 'acme-corp_8x2a1',
-                pocs: [{
-                    id: 'p1',
-                    name: 'Login Module Feature',
-                    testCases: [
-                        { id: 't1', testNo: 1, module: 'Authentication', scenario: 'Login with valid credentials', execStep: '1. Open app\n2. Enter valid username\n3. Enter valid password\n4. Click Login', expectedBehavior: 'User should be redirected to dashboard', actualBehavior: 'User redirected to dashboard', comment: 'Verified on Chrome v120', status: 'Pass' },
-                        { id: 't2', testNo: 2, module: 'Authentication', scenario: 'Login with invalid password', execStep: '1. Open app\n2. Enter valid username\n3. Enter wrong password\n4. Click Login', expectedBehavior: 'Error message: Invalid credentials', actualBehavior: 'Shows error alert', comment: '', status: 'Pass' },
-                        { id: 't3', testNo: 3, module: 'Authentication', scenario: 'Forgot password flow', execStep: '1. Click Forgot Password\n2. Enter registered email\n3. Click Submit', expectedBehavior: 'Password reset email should be sent', actualBehavior: '', comment: '', status: 'In Progress' },
-                        { id: 't4', testNo: 4, module: 'Authentication', scenario: 'Session timeout after 30 min', execStep: '1. Login successfully\n2. Wait 30 minutes idle\n3. Try to navigate', expectedBehavior: 'User should be redirected to login page', actualBehavior: 'Token refreshed instead', comment: 'Check session timeout config', status: 'Fail' }
-                    ]
-                }]
-            }, {
-                id: 'c2',
-                name: 'Stark Industries',
-                accessKey: 'stark-ind_9z7c3',
-                pocs: [{
-                    id: 'p2',
-                    name: 'Security Feature',
-                    testCases: []
-                }]
-            }]
-        };
-        isLoading = false;
-        isAdmin = urlParams.get('admin') === '1';
-        document.body.classList.remove('signed-out');
-        document.getElementById('authView').hidden = true;
-        renderSidebar();
-        if (urlParams.get('demo') === '2') {
-            showDashboard();
-        } else {
-            showCustomer('c1');
-        }
-        updateAdminUI();
-        return;
-    }
-
-    firebaseAuth.onAuthStateChanged((user) => {
-        const authView = document.getElementById('authView');
-        const signOutBtn = document.getElementById('signOutBtn');
-        if (!user) {
-            if (cloudUnsubscribe) {
-                cloudUnsubscribe();
-                cloudUnsubscribe = null;
-            }
-            db = { customers: [] };
-            isAdmin = false;
-            document.body.classList.add('signed-out');
-            if (authView) authView.hidden = false;
-            if (signOutBtn) signOutBtn.hidden = true;
-            isLoading = true;
-            return;
-        }
-
-        if (!user.emailVerified) {
-            isAdmin = false;
-            document.body.classList.add('signed-out');
-            if (authView) authView.hidden = false;
-            if (signOutBtn) signOutBtn.hidden = true;
-            showAuthError('Verify your email address before accessing cloud data.');
-            isLoading = true;
-            return;
-        }
-
-        isAdmin = isAuthorizedTrackerAdmin(user);
-        if (isAdmin) {
-            activeCustomerKey = null;
-        }
-        document.body.classList.remove('signed-out');
-        if (authView) authView.hidden = true;
-        if (signOutBtn) signOutBtn.hidden = false;
-        updateAdminUI();
-        loadDataFromCloud();
-    }, (error) => {
-        console.error('Firebase authentication state error:', error);
-        showAuthError(error.message);
-    });
-});
-
-async function signInToCloud(event) {
-    event.preventDefault();
-    const email = document.getElementById('authEmail').value.trim();
-    const password = document.getElementById('authPassword').value;
-    const signInBtn = document.getElementById('signInBtn');
-    showAuthError('');
-    signInBtn.disabled = true;
-    try {
-        const credential = await firebaseAuth.signInWithEmailAndPassword(email, password);
-        if (!credential.user.emailVerified) {
-            await credential.user.sendEmailVerification();
-            await firebaseAuth.signOut();
-            showAuthError('A verification link was sent to your email. Verify it, then sign in again.');
-        }
-    } catch (error) {
-        console.error('Firebase sign-in error:', error);
-        showAuthError(error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found'
-            ? 'Email or password is incorrect.'
-            : error.message);
-    } finally {
-        signInBtn.disabled = false;
-    }
-}
-
-function showAuthError(message) {
-    const errorElement = document.getElementById('authError');
-    if (!errorElement) return;
-    errorElement.textContent = message;
-    errorElement.hidden = !message;
-}
-
-async function signOutOfCloud() {
-    try {
-        await firebaseAuth.signOut();
-    } catch (error) {
-        console.error('Firebase sign-out error:', error);
-        toast('Unable to sign out: ' + error.message, 'error');
-    }
-}
-
-// ============================================================
-// DATA PERSISTENCE (Firebase Firestore)
-// ============================================================
-function loadDataFromCloud() {
-    if (cloudUnsubscribe) cloudUnsubscribe();
-    // Real-time listener: auto-syncs when anyone makes changes
-    cloudUnsubscribe = DB_DOC.onSnapshot((doc) => {
-        if (doc.exists) {
-            const cloudData = doc.data();
-            const rawCustomers = Array.isArray(cloudData.customers)
-                ? cloudData.customers
-                : cloudData.id || cloudData.pocs
-                    ? [cloudData]
-                    : null;
-            if (!rawCustomers) {
-                console.error('Unexpected Firestore data shape:', cloudData);
-                toast('Cloud data was found, but its format is not recognized. No data was changed.', 'error');
-                isLoading = false;
-                refreshCurrentView();
-                return;
-            }
-
-            const normalized = normalizeCloudCustomers(rawCustomers);
-            if (normalized.customers.length === 0 && rawCustomers.some(value => String(value ?? '').trim())) {
-                console.error('Firestore customer entries could not be normalized:', cloudData);
-                hasUnrecognizedCloudData = true;
-                toast('Cloud data was found, but its feature entries could not be read. No data was changed.', 'error');
-                isLoading = false;
-                refreshCurrentView();
-                return;
-            }
-            db = { ...cloudData, customers: normalized.customers };
-            hasUnrecognizedCloudData = normalized.ignoredEntries > 0;
-            if (normalized.ignoredEntries > 0) {
-                console.warn(`Found ${normalized.ignoredEntries} unrecognized non-empty Firestore entr${normalized.ignoredEntries === 1 ? 'y' : 'ies'}. Cloud writes are paused to protect the original data.`);
-                toast('Some saved cloud entries could not be read. Cloud writes are paused to protect your data.', 'error');
-            } else {
-                hasUnrecognizedCloudData = false;
-            }
-        } else {
-            hasUnrecognizedCloudData = false;
-            db = { customers: [] };
-            DB_DOC.set(db).catch(e => {
-                console.error('Firestore initialization error:', e);
-                toast(getCloudPermissionMessage(e, 'Unable to initialize cloud data.'), 'error');
-            });
-        }
-        isLoading = false;
-        refreshCurrentView();
-    }, (error) => {
-        console.error('Firebase snapshot error:', error);
-        toast(getCloudPermissionMessage(error, 'Cloud sync notice: ' + error.message), 'error');
-        // Fallback to localStorage if offline
-        const stored = localStorage.getItem('pocTestTracker');
-        if (stored) {
-            try { db = JSON.parse(stored); } catch (e) { db = { customers: [] }; }
-        }
-        isLoading = false;
-        refreshCurrentView();
-    });
-}
-
-function normalizeCloudCustomers(rawCustomers) {
-    const customers = [];
-    let ignoredEntries = 0;
-
-    rawCustomers.forEach((rawCustomer, customerIndex) => {
-        const customer = parseCloudValue(rawCustomer);
-        if (!customer || typeof customer !== 'object' || Array.isArray(customer) || !Array.isArray(customer.pocs)) {
-            if (String(rawCustomer ?? '').trim()) ignoredEntries++;
-            return;
-        }
-
-        const pocs = [];
-        customer.pocs.forEach((rawPoc, pocIndex) => {
-            const poc = parseCloudValue(rawPoc);
-            if (!poc || typeof poc !== 'object' || Array.isArray(poc)) {
-                if (String(rawPoc ?? '').trim()) ignoredEntries++;
-                return;
-            }
-
-            const testCases = [];
-            if (Array.isArray(poc.testCases)) {
-                poc.testCases.forEach(rawTestCase => {
-                    const testCase = parseCloudValue(rawTestCase);
-                    if (testCase && typeof testCase === 'object' && !Array.isArray(testCase)) {
-                        testCases.push(testCase);
-                    } else if (String(rawTestCase ?? '').trim()) {
-                        ignoredEntries++;
-                    }
-                });
-            }
-            pocs.push({
-                ...poc,
-                id: poc.id ? String(poc.id) : genId(),
-                name: String(poc.name || poc.moduleName || `Module ${pocIndex + 1}`),
-                columns: Array.isArray(poc.columns) ? poc.columns : [],
-                testCases
-            });
-        });
-
-        customers.push({
-            ...customer,
-            id: customer.id ? String(customer.id) : genId(),
-            name: String(customer.name || customer.customerName || customer.featureName || `Imported Feature ${customerIndex + 1}`),
-            pocs
-        });
-    });
-
-    return { customers, ignoredEntries };
-}
-
-function parseCloudValue(value) {
-    if (typeof value !== 'string') return value;
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    try {
-        return JSON.parse(trimmed);
-    } catch (error) {
-        return null;
-    }
-}
-
-function getCloudPermissionMessage(error, fallback) {
-    if (error && (error.code === 'permission-denied' || error.code === 'firestore/permission-denied')) {
-        return 'Cloud access denied. Sign in with an authorized account and publish the Firestore rules from firestore.rules.';
-    }
-    return fallback;
-}
-
-function saveData() {
-    // Save to Firestore
-    if (!firebaseAuth.currentUser) {
-        localStorage.setItem('pocTestTracker', JSON.stringify(db));
-        toast('Sign in to sync changes to the cloud.', 'error');
-        return;
-    }
-    if (hasUnrecognizedCloudData) {
-        localStorage.setItem('pocTestTracker', JSON.stringify(db));
-        toast('Cloud save paused to protect entries that could not be read. Correct the Firestore data format before saving.', 'error');
-        return;
-    }
-    DB_DOC.set(JSON.parse(JSON.stringify(db))).catch(err => {
-        console.error('Save error:', err);
-        toast(getCloudPermissionMessage(err, 'Error saving to cloud: ' + err.message), 'error');
-    });
-    // Also backup locally
-    localStorage.setItem('pocTestTracker', JSON.stringify(db));
-}
-
-function refreshCurrentView() {
-    ensureCustomerAccessKeys();
-
-    if (!isAdmin && !activeCustomerKey) {
-        // Visitor is not Admin and has no client link: show secure portal landing
-        showView('portalLandingView');
-        renderSidebar();
-        return;
-    }
-
-    if (!isAdmin && activeCustomerKey) {
-        // Customer viewing their private space
-        const visible = getVisibleCustomers();
-        if (visible.length === 0) {
-            toast('Invalid or expired customer access link.', 'error');
-            showView('portalLandingView');
-            renderSidebar();
-            return;
-        }
-        renderSidebar();
-        const myCust = visible[0];
-        if (currentPocId && currentCustomerId === myCust.id) {
-            showPoc(myCust.id, currentPocId);
-        } else {
-            showCustomer(myCust.id);
-        }
-        return;
-    }
-
-    // Admin view
-    renderSidebar();
-    if (currentPocId && currentCustomerId) {
-        const poc = getPoc(currentCustomerId, currentPocId);
-        if (poc) {
-            showPoc(currentCustomerId, currentPocId);
-        } else {
-            showCustomer(currentCustomerId);
-        }
-    } else if (currentCustomerId) {
-        const customer = getCustomer(currentCustomerId);
-        if (customer) {
-            showCustomer(currentCustomerId);
-        } else {
-            showDashboard();
-        }
-    } else {
-        showDashboard();
-    }
-}
-
-// ============================================================
-// NAVIGATION
-// ============================================================
-function showView(viewId) {
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    const el = document.getElementById(viewId);
-    if (el) el.classList.add('active');
-    requestAnimationFrame(syncTestTableScrollProxy);
-}
-
-function showDashboard() {
-    dashboardFeatureFilter = null;
-    if (!isAdmin && !activeCustomerKey) {
-        showView('portalLandingView');
-        highlightActiveNav();
-        updateAdminUI();
-        return;
-    }
-    if (!isAdmin && activeCustomerKey) {
-        const visible = getVisibleCustomers();
-        if (visible.length > 0) {
-            showCustomer(visible[0].id);
-            return;
-        }
-    }
-    currentCustomerId = null;
-    currentPocId = null;
-    showView('dashboardView');
-    renderDashboard();
-    highlightActiveNav();
-    updateAdminUI();
-}
-
-function showCustomer(customerId) {
-    const visible = getVisibleCustomers();
-    const customer = visible.find(c => c.id === customerId);
-    if (!customer) {
-        showDashboard();
-        return;
-    }
-    currentCustomerId = customerId;
-    currentPocId = null;
-    document.getElementById('customerTitle').textContent = customer.name;
-
-    // Show/hide Link Bar for Admin
-    const linkBar = document.getElementById('customerLinkBar');
-    const linkText = document.getElementById('customerLinkText');
-    if (linkBar && linkText) {
-        if (isAdmin) {
-            linkText.textContent = getShareableLink(customer);
-            linkBar.style.display = 'flex';
-        } else {
-            linkBar.style.display = 'none';
-        }
-    }
-
-    showView('customerView');
-    renderPocGrid();
-    highlightActiveNav();
-    updateAdminUI();
-}
-
-function showPoc(customerId, pocId) {
-    currentCustomerId = customerId;
-    currentPocId = pocId;
-    const customer = getCustomer(customerId);
-    const poc = getPoc(customerId, pocId);
-    if (!customer || !poc) return;
-    document.getElementById('pocTitle').textContent = `${customer.name} → ${poc.name}`;
-    showView('pocView');
-    populateModuleFilter();
-    renderTestCases();
-    highlightActiveNav();
-    updateAdminUI();
-}
-
-function highlightActiveNav() {
-    const dashBtn = document.getElementById('navDashboardBtn');
-    if (dashBtn) {
-        dashBtn.classList.toggle('active', currentCustomerId === null);
-    }
-    document.querySelectorAll('.customer-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.id === currentCustomerId);
-    });
-}
-
-// ============================================================
-// HELPERS
-// ============================================================
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
-
-function getCustomer(id) { return db.customers.find(c => c.id === id); }
-
-function getPoc(customerId, pocId) {
-    const c = getCustomer(customerId);
-    return c ? c.pocs.find(p => p.id === pocId) : null;
-}
-
-function getTestCaseStats(testCases) {
-    const stats = { total: testCases.length, Pass: 0, Fail: 0, 'Partially Pass': 0, Blocked: 0, 'In Progress': 0, 'Not Executed': 0, 'Not Applicable': 0 };
-    testCases.forEach(tc => { if (stats[tc.status] !== undefined) stats[tc.status]++; });
-    return stats;
-}
-
-// ============================================================
-// RENDER: SIDEBAR
-// ============================================================
-function renderSidebar() {
-    const list = document.getElementById('customerList');
-    const visible = getVisibleCustomers();
-    if (visible.length === 0) {
-        list.innerHTML = '<p style="padding:16px;color:var(--gray-400);font-size:13px;text-align:center;">No features available</p>';
-        return;
-    }
-    list.innerHTML = visible.map(c => `
-        <div class="customer-item">
-            <button class="customer-btn ${c.id === currentCustomerId ? 'active' : ''}" 
-                    data-id="${c.id}" onclick="showCustomer('${c.id}')">
-                <i class="fas fa-building"></i>
-                <span>${escHtml(c.name)}</span>
-                <span class="count">${c.pocs.length} Module${c.pocs.length !== 1 ? 's' : ''}</span>
-            </button>
+function shell(body, title = 'QA Bug Tracker V2') {
+  return `
+    <div class="shell">
+      <div class="top">
+        <h1>${safe(title)}</h1>
+        <div class="actions">
+          ${button('Home', "go('landing')")}
+          ${button('Dashboard', "go('dashboard')")}
+          ${hasRole() ? button('Workspace', "go('features')") : ''}
+          ${hasRole() ? button('Sign out', 'logout()') : ''}
         </div>
-    `).join('');
+      </div>
+      ${body}
+    </div>
+  `;
 }
 
-// ============================================================
-// RENDER: DASHBOARD
-// ============================================================
-function showDashboardFeatureFilter(state) {
-    dashboardFeatureFilter = dashboardFeatureFilter === state ? null : state;
-    renderDashboard();
-    const section = document.getElementById('dashboardFeatureStatusSection');
-    if (dashboardFeatureFilter && section) section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+function landing() {
+  return `
+    <div class="landing">
+      <h1>QA Bug Tracker</h1>
+      <p class="muted" style="text-align:center">
+        Choose your workspace
+      </p>
+      <div class="tiles">
+        <button class="tile" onclick="openLogin('admin')">
+          <strong>Admin</strong>
+          <small>Password protected</small>
+        </button>
+        <button class="tile" onclick="openLogin('tester')">
+          <strong>Tester</strong>
+          <small>Password protected</small>
+        </button>
+        <button class="tile" onclick="go('dashboard')">
+          <strong>Dashboard</strong>
+          <small>Public read-only summary</small>
+        </button>
+      </div>
+    </div>
+  `;
 }
 
-function clearDashboardFeatureFilter() {
-    dashboardFeatureFilter = null;
-    renderDashboard();
+function openLogin(nextRole) {
+  requestedRole = nextRole;
+  go('login');
 }
 
-function setDashboardCustomerFilter(customerId) {
-    dashboardCustomerFilter = customerId;
-    renderDashboard();
+function login() {
+  return `
+    <div class="panel login">
+      <h2>${requestedRole === 'admin' ? 'Admin' : 'Tester'} sign in</h2>
+      <p class="muted">
+        Enter the password for your provisioned Firebase role account.
+      </p>
+      <form onsubmit="loginSubmit(event)">
+        <input id="password" type="password"
+          autocomplete="current-password"
+          required placeholder="Password">
+        <button class="primary">Sign in</button>
+      </form>
+      <p id="loginError" class="danger"></p>
+    </div>
+  `;
 }
 
-function renderDashboardFeatureFilter(features) {
-    const section = document.getElementById('dashboardFeatureStatusSection');
-    const title = document.getElementById('dashboardFeatureStatusTitle');
-    const grid = document.getElementById('dashboardFeatureStatusGrid');
-    if (!section || !title || !grid) return;
-    if (!dashboardFeatureFilter) {
-        section.style.display = 'none';
-        grid.innerHTML = '';
-        return;
+async function loginSubmit(event) {
+  event.preventDefault();
+
+  const email = requestedRole === 'admin'
+    ? APP_CONFIG.adminEmail
+    : APP_CONFIG.testerEmail;
+
+  try {
+    const result = await auth.signInWithEmailAndPassword(
+      email, $('password').value
+    );
+
+    if (!result.user.emailVerified) {
+      throw Error('Verify the Firebase account email first.');
     }
 
-    const labels = {
-        'under-test': 'Modules Under Test',
-        'not-tested': 'Modules Not Tested',
-        completed: 'Completed Modules'
-    };
-    const matched = features.filter(feature => feature.state === dashboardFeatureFilter);
-    const customerGroups = new Map();
-    matched.forEach(feature => {
-        if (!customerGroups.has(feature.customerId)) {
-            customerGroups.set(feature.customerId, {
-                customerId: feature.customerId,
-                customerName: feature.customerName,
-                features: []
-            });
-        }
-        customerGroups.get(feature.customerId).features.push(feature);
-    });
+    if (result.user.email?.toLowerCase() !== email.toLowerCase()) {
+      throw Error('Incorrect role account.');
+    }
 
-    title.innerHTML = `<i class="fas fa-list-check"></i> ${labels[dashboardFeatureFilter]}`;
-    grid.innerHTML = customerGroups.size ? [...customerGroups.values()].map(customer => `
-        <div class="customer-overview-card">
-            <div class="cust-card-header">
-                <h4><i class="fas fa-building" style="color:var(--primary);margin-right:8px;"></i>${escHtml(customer.customerName)}</h4>
-                <span class="badge badge-gray">${customer.features.length} Module${customer.features.length !== 1 ? 's' : ''}</span>
-            </div>
-            <div class="poc-tag-list">
-                ${customer.features.map(feature => `
-                    <div class="poc-tag-item" onclick="showPoc('${feature.customerId}', '${feature.id}')" title="Open ${escHtml(feature.name)} test cases">
-                        <span><i class="fas fa-flask" style="color:var(--primary);margin-right:6px;"></i>${escHtml(feature.name)}</span>
-                        <span class="badge ${feature.state === 'completed' ? 'badge-pass' : feature.state === 'under-test' ? 'badge-info' : 'badge-gray'}">
-                            ${feature.state === 'completed' ? 'Completed' : feature.state === 'under-test' ? 'Under Test' : 'Not Tested'}
-                        </span>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-    `).join('') : `
-        <div class="empty-state" style="grid-column:1/-1;">
-            <i class="fas fa-list-check"></i>
-            <p>No modules in this category.</p>
-        </div>`;
-    section.style.display = 'block';
+    role = requestedRole;
+    bindPrivate();
+    go('features');
+  } catch (error) {
+    $('loginError').textContent = error.message;
+    await auth.signOut().catch(() => {});
+  }
 }
 
-function renderDashboard() {
-    let totalCustomers = db.customers.length;
-    let totalPocs = 0, totalTCs = 0, totalPass = 0, totalFail = 0;
-    const features = [];
-    db.customers.forEach(c => {
-        totalPocs += c.pocs.length;
-        c.pocs.forEach(p => {
-            totalTCs += p.testCases.length;
-            const stats = getTestCaseStats(p.testCases);
-            const executionState = getFeatureExecutionState(p);
-            const totalExecuted = p.testCases.filter(testCase => testCase.status && testCase.status !== 'Not Executed').length;
-            features.push({
-                customerId: c.id,
-                customerName: c.name,
-                id: p.id,
-                name: p.name,
-                testCases: p.testCases.length,
-                executed: totalExecuted,
-                final: RESULT_TEST_STATUSES.reduce((count, status) => count + stats[status], 0),
-                passed: stats.Pass,
-                defects: stats.Fail,
-                state: executionState
-            });
-            p.testCases.forEach(tc => {
-                if (tc.status === 'Pass') totalPass++;
-                if (tc.status === 'Fail') totalFail++;
-            });
-        });
-    });
+async function logout() {
+  await auth.signOut();
+  role = 'guest';
+  data = { features: [] };
 
-    const statsEl = document.getElementById('dashboardStats');
-    if (statsEl) {
-        const underTest = features.filter(feature => feature.state === 'under-test').length;
-        const notTested = features.filter(feature => feature.state === 'not-tested').length;
-        const completed = features.filter(feature => feature.state === 'completed').length;
-        statsEl.innerHTML = `
-            <div class="stat-card"><div class="stat-number">${totalCustomers}</div><div class="stat-label">Features</div></div>
-            <div class="stat-card"><div class="stat-number">${totalPocs}</div><div class="stat-label">Modules</div></div>
-            <div class="stat-card"><div class="stat-number">${totalTCs}</div><div class="stat-label">Test Cases</div></div>
-            <div class="stat-card"><div class="stat-number" style="color:var(--success)">${totalPass}</div><div class="stat-label">Passed</div></div>
-            <div class="stat-card"><div class="stat-number" style="color:var(--danger)">${totalFail}</div><div class="stat-label">Failed</div></div>
-            <button class="stat-card stat-card-filter ${dashboardFeatureFilter === 'under-test' ? 'selected' : ''}" onclick="showDashboardFeatureFilter('under-test')" aria-pressed="${dashboardFeatureFilter === 'under-test'}" title="Show modules currently under test">
-                <span class="stat-number">${underTest}</span><span class="stat-label">Modules Under Test</span>
-            </button>
-            <button class="stat-card stat-card-filter ${dashboardFeatureFilter === 'not-tested' ? 'selected' : ''}" onclick="showDashboardFeatureFilter('not-tested')" aria-pressed="${dashboardFeatureFilter === 'not-tested'}" title="Show modules not yet tested">
-                <span class="stat-number">${notTested}</span><span class="stat-label">Modules Not Tested</span>
-            </button>
-            <button class="stat-card stat-card-filter ${dashboardFeatureFilter === 'completed' ? 'selected' : ''}" onclick="showDashboardFeatureFilter('completed')" aria-pressed="${dashboardFeatureFilter === 'completed'}" title="Show completed modules">
-                <span class="stat-number">${completed}</span><span class="stat-label">Modules Completed</span>
-            </button>
-        `;
-    }
+  if (unsub) {
+    unsub();
+    unsub = null;
+  }
 
-    renderDashboardFeatureFilter(features);
-
-    const featureBody = document.getElementById('dashboardFeatureBody');
-    const emptyFeatureState = document.getElementById('emptyDashboardFeatures');
-    const emptyFeatureMessage = document.getElementById('emptyDashboardFeaturesMessage');
-    const featureSelect = document.getElementById('dashboardFeatureSelect');
-    const visibleCustomers = getVisibleCustomers();
-    if (featureSelect) {
-        if (dashboardCustomerFilter !== 'all' &&
-            !visibleCustomers.some(customer => customer.id === dashboardCustomerFilter)) {
-            dashboardCustomerFilter = 'all';
-        }
-        featureSelect.innerHTML = '<option value="all">All Features</option>' + visibleCustomers.map(customer =>
-            `<option value="${escHtml(customer.id)}">${escHtml(customer.name)}</option>`
-        ).join('');
-        featureSelect.value = dashboardCustomerFilter;
-    }
-    if (featureBody && emptyFeatureState) {
-        const featureRows = features.filter(feature =>
-            dashboardCustomerFilter === 'all' || feature.customerId === dashboardCustomerFilter
-        ).sort((a, b) =>
-            a.customerName.localeCompare(b.customerName, undefined, { numeric: true }) ||
-            a.name.localeCompare(b.name, undefined, { numeric: true })
-        );
-        featureBody.innerHTML = featureRows.map(feature => {
-            const executionPercent = feature.testCases ? Math.round(feature.executed / feature.testCases * 100) : 0;
-            const passPercent = feature.final ? Math.round(feature.passed / feature.final * 100) : 0;
-            const stateLabel = feature.state === 'under-test' ? 'Under Test' :
-                feature.state === 'completed' ? 'Completed' : 'Not Tested';
-            const stateClass = feature.state === 'under-test' ? 'badge-info' :
-                feature.state === 'completed' ? 'badge-pass' : 'badge-gray';
-            return `<tr>
-                <td>${escHtml(feature.customerName)}</td>
-                <td><button class="dashboard-feature-link" onclick="showPoc('${feature.customerId}', '${feature.id}')" title="Open ${escHtml(feature.name)} test cases">${escHtml(feature.name)}</button></td>
-                <td><span class="badge ${stateClass}">${stateLabel}</span></td>
-                <td>${feature.testCases}</td>
-                <td>${executionPercent}%</td>
-                <td>${passPercent}%</td>
-                <td>${feature.defects}</td>
-            </tr>`;
-        }).join('');
-        emptyFeatureState.style.display = featureRows.length ? 'none' : 'block';
-        if (emptyFeatureMessage) {
-            emptyFeatureMessage.textContent = dashboardCustomerFilter === 'all'
-                ? 'No module data available yet.'
-                : 'No module data available for this feature yet.';
-        }
-    }
-
-    // Render Customer & POC Navigation Cards on Dashboard
-    const gridEl = document.getElementById('dashboardCustomerGrid');
-    if (gridEl) {
-        if (db.customers.length === 0) {
-            gridEl.innerHTML = `
-                <div class="empty-state" style="grid-column: 1 / -1;">
-                    <i class="fas fa-building-circle-check"></i>
-                    <p>No features created yet. Click "+ Add" in the sidebar or "Import Test Cases" above.</p>
-                </div>`;
-        } else {
-            gridEl.innerHTML = db.customers.map(c => `
-                <div class="customer-overview-card">
-                    <div class="cust-card-header">
-                        <h4 onclick="showCustomer('${c.id}')"><i class="fas fa-building" style="color:var(--primary);margin-right:8px;"></i>${escHtml(c.name)}</h4>
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                                            <span class="badge badge-gray">${c.pocs.length} Module${c.pocs.length !== 1 ? 's' : ''}</span>
-                                            ${isAdmin ? `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); copyCustomerLink('${c.id}')" title="Copy private feature link for ${escHtml(c.name)}"><i class="fas fa-link"></i> Link</button>` : ''}
-                        </div>
-                    </div>
-                    <div class="poc-tag-list">
-                        ${c.pocs.length === 0 ? '<p style="font-size:12px;color:var(--gray-400);">No modules yet.</p>' : 
-                            c.pocs.map(p => {
-                                const st = getTestCaseStats(p.testCases);
-                                return `
-                                    <div class="poc-tag-item" onclick="showPoc('${c.id}', '${p.id}')" title="Open ${escHtml(p.name)} Test Cases">
-                                        <span><i class="fas fa-flask" style="color:var(--primary);margin-right:6px;"></i>${escHtml(p.name)}</span>
-                                        <span class="badge ${st.Pass > 0 && st.Pass === st.total ? 'badge-pass' : 'badge-info'}">${st.total} tests</span>
-                                    </div>
-                                `;
-                            }).join('')
-                        }
-                    </div>
-                </div>
-            `).join('');
-        }
-    }
+  go('landing');
 }
 
-// ============================================================
-// RENDER: POC GRID (Customer View)
-// ============================================================
-function renderPocGrid() {
-    const customer = getCustomer(currentCustomerId);
-    const grid = document.getElementById('pocGrid');
-    if (!customer || customer.pocs.length === 0) {
-        grid.innerHTML = `<div class="empty-state"><i class="fas fa-folder-open"></i><p>No modules yet for this feature. Click "Add Module" to create one.</p></div>`;
-        return;
-    }
-    grid.innerHTML = customer.pocs.map(poc => {
-        const stats = getTestCaseStats(poc.testCases);
-        const passRate = stats.total > 0 ? Math.round((stats.Pass / stats.total) * 100) : 0;
-        const progressClass = passRate >= 70 ? 'good' : passRate >= 40 ? 'medium' : 'bad';
-        return `
-        <div class="poc-card" onclick="showPoc('${customer.id}', '${poc.id}')">
-            <div class="poc-card-heading">
-                <h3><i class="fas fa-flask" style="color:var(--primary);margin-right:6px;"></i>${escHtml(poc.name)}</h3>
-                ${isAdmin ? `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); renamePoc('${customer.id}', '${poc.id}')" title="Edit Module Name"><i class="fas fa-pen"></i> Edit</button>` : ''}
-            </div>
-            <div class="poc-meta">
-                <span><i class="fas fa-list-check"></i> ${stats.total} test cases</span>
-                <span><i class="fas fa-chart-pie"></i> ${passRate}% pass rate</span>
-            </div>
-            <div class="progress-bar"><div class="progress-fill ${progressClass}" style="width:${passRate}%"></div></div>
-            <div class="poc-stats-row">
-                <span class="poc-stat-badge badge-pass">${stats.Pass} Pass</span>
-                <span class="poc-stat-badge badge-fail">${stats.Fail} Fail</span>
-                <span class="poc-stat-badge badge-fail">${stats['Partially Pass']} Partially Pass</span>
-                <span class="poc-stat-badge badge-blocked" style="background:var(--blocked-bg);color:var(--blocked)">${stats.Blocked} Blocked</span>
-                <span class="poc-stat-badge badge-gray">${stats['Not Executed']} Pending</span>
-                <span class="poc-stat-badge badge-gray">${stats['Not Applicable']} Not Applicable</span>
-            </div>
-        </div>`;
-    }).join('');
-}
+function dashboard() {
+  const features = hasRole()
+    ? publicSummary().features
+    : (publicData.features || []);
 
-// ============================================================
-// RENDER: TEST CASES TABLE (Execution Page)
-// ============================================================
-function renderTestCases() {
-    const poc = getPoc(currentCustomerId, currentPocId);
-    if (!poc) return;
+  const notStarted = features.filter(
+    f => f.status === 'Not Started'
+  ).length;
 
-    const columns = getPocColumns(poc);
-    const statusFilter = document.getElementById('statusFilter')?.value || 'all';
-    const moduleFilter = document.getElementById('moduleFilter')?.value || 'all';
-    const search = (document.getElementById('searchInput')?.value || '').toLowerCase();
+  const under = features.filter(
+    f => f.status === 'In Progress'
+  ).length;
 
-    const filtered = poc.testCases.filter(tc => {
-        if (statusFilter !== 'all' && tc.status !== statusFilter) return false;
-        if (moduleFilter !== 'all' && getFeatureName(tc, columns) !== moduleFilter) return false;
-        if (search) {
-            const text = columns.map(column => getTestCaseValue(tc, column)).join(' ').toLowerCase();
-            if (!text.includes(search)) return false;
-        }
-        return true;
-    }).sort((a, b) => {
-        const first = Number(a.testNo);
-        const second = Number(b.testNo);
-        if (Number.isFinite(first) && Number.isFinite(second)) return first - second;
-        return String(a.testNo ?? '').localeCompare(String(b.testNo ?? ''), undefined, { numeric: true });
-    });
+  const done = features.filter(
+    f => f.status === 'Completed'
+  ).length;
 
-    const tbody = document.getElementById('testCaseBody');
-    const thead = document.getElementById('testCaseHead');
-    const colgroup = document.getElementById('testCaseColumns');
-    const emptyMsg = document.getElementById('emptyTestCases');
-    const table = document.getElementById('testCaseTable');
-    // Fit each column to its own visible content; do not distribute empty space.
-    const widths = columns.map(column => getAutoColumnWidth(filtered, column));
-    if (isAdmin) widths.push(92);
-    if (colgroup) {
-        colgroup.innerHTML = widths.map(width => `<col style="width:${width}px">`).join('');
-    }
-    table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
-    if (thead) {
-        thead.innerHTML = `
+  const visibleDefects = hasRole()
+    ? defectRows(data.features)
+    : (publicData.defectRows || []);
+
+  const total = uniqueDefects(visibleDefects);
+  const blocked = uniqueDefects(
+    visibleDefects.filter(r => r.blocker)
+  );
+
+  return shell(`
+    <div class="tiles">
+      <button class="tile" onclick="showFeatureStatus('Not Started')">
+        <strong>${notStarted}</strong>
+        <small>Features Need Testing</small>
+      </button>
+
+      <button class="tile" onclick="showFeatureStatus('In Progress')">
+        <strong>${under}</strong>
+        <small>Features Under Testing</small>
+      </button>
+
+      <button class="tile" onclick="showFeatureStatus('Completed')">
+        <strong>${done}</strong>
+        <small>Completed Features</small>
+      </button>
+
+      <div class="tile">
+        <button class="link"
+          onclick="defectFilter='all';go('defects')">
+          <strong>${total}</strong>
+          <small>Total Defects</small>
+        </button>
+        <button class="link"
+          onclick="defectFilter='blocker';go('defects')">
+          <b>${blocked}</b> Blocked Defects
+        </button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Current Cycle Summary — All Features</h2>
+      <div class="tablewrap">
+        <table class="data">
+          <thead>
             <tr>
-                ${columns.map((column, index) => `
-                    <th class="${getColumnKind(column) === 'module' ? 'col-module' : ''}" data-column-index="${index}">
-                        ${escHtml(column)}
-                        <span class="column-resizer" title="Drag to resize column" aria-label="Resize ${escHtml(column)} column"></span>
-                    </th>`).join('')}
-                ${isAdmin ? '<th class="col-actions">Actions</th>' : ''}
+              <th>Feature</th><th>Execution Type</th>
+              <th>Cycle</th><th>State</th>
+              <th>Cases Added/Selected</th><th>Executed</th>
+              <th>Passed</th><th>Failed</th>
+              <th>Blocked</th><th>Unique Defects</th>
             </tr>
-        `;
-    }
-    attachColumnResizers(poc, columns);
-
-    if (filtered.length === 0) {
-        tbody.innerHTML = '';
-        emptyMsg.style.display = 'block';
-        table.style.display = 'none';
-    } else {
-        emptyMsg.style.display = 'none';
-        table.style.display = 'table';
-        tbody.innerHTML = filtered.map((tc) => {
-            const statusClass = 'status-' + String(tc.status || 'Not Executed').toLowerCase().replace(/\s+/g, '-');
-            return `
-            <tr data-id="${tc.id}">
-                ${columns.map(column => {
-                    const kind = getColumnKind(column);
-                    const value = String(getTestCaseValue(tc, column) ?? '');
-                    if (kind === 'status') {
-                        const statusEnabled = poc.executionStartedAt && hasTestCaseResults(tc, columns);
-                        const statusDisabledTitle = !poc.executionStartedAt
-                            ? 'Start execution to update test statuses'
-                            : 'Fill Expected Result and Actual Result to enable status';
-                        return `<td><select class="status-select ${statusClass}" data-id="${tc.id}" onchange="onStatusChange(this)" ${statusEnabled ? '' : `disabled title="${statusDisabledTitle}"`}>
-                            <option value="Not Executed" ${tc.status === 'Not Executed' ? 'selected' : ''}>Not Executed</option>
-                            <option value="In Progress" ${tc.status === 'In Progress' ? 'selected' : ''}>In Progress</option>
-                            <option value="Pass" ${tc.status === 'Pass' ? 'selected' : ''}>Pass</option>
-                            <option value="Fail" ${tc.status === 'Fail' ? 'selected' : ''}>Fail</option>
-                            <option value="Partially Pass" ${tc.status === 'Partially Pass' ? 'selected' : ''}>Partially Pass</option>
-                            <option value="Blocked" ${tc.status === 'Blocked' ? 'selected' : ''}>Blocked</option>
-                            <option value="Not Applicable" ${tc.status === 'Not Applicable' ? 'selected' : ''}>Not Applicable</option>
-                        </select></td>`;
-                    }
-                    if (kind === 'testNo') {
-                        return `<td class="col-no" style="text-align:center;font-weight:600;color:var(--gray-600)"><div class="editable-cell" contenteditable="true" data-column="${escHtml(column)}" data-id="${tc.id}" onblur="onCellEdit(this)">${escHtml(value)}</div></td>`;
-                    }
-                    return `<td class="${kind === 'module' ? 'col-module' : ''}"><div class="editable-cell" contenteditable="true" data-column="${escHtml(column)}" data-id="${tc.id}" onblur="onCellEdit(this)">${escHtml(value)}</div></td>`;
-                }).join('')}
-                ${isAdmin ? `
-                <td class="col-actions">
-                    <div class="row-actions">
-                        <button title="Delete Test Case" onclick="deleteTestCase('${tc.id}')"><i class="fas fa-trash"></i></button>
-                    </div>
-                </td>` : ''}
-            </tr>`;
-        }).join('');
-    }
-
-    renderExecutionControls(poc);
-
-    // Stats bar update
-    const allStats = getTestCaseStats(poc.testCases);
-    const pocStatsEl = document.getElementById('pocStats');
-    if (pocStatsEl) {
-        pocStatsEl.innerHTML = `
-            <span class="badge badge-pass">${allStats.Pass} Pass</span>
-            <span class="badge badge-fail">${allStats.Fail} Fail</span>
-            <span class="badge badge-fail">${allStats['Partially Pass']} Partially Pass</span>
-            <span class="badge" style="background:var(--blocked-bg);color:var(--blocked)">${allStats.Blocked} Blocked</span>
-            <span class="badge badge-info">${allStats['In Progress']} In Prog</span>
-            <span class="badge badge-gray">${allStats['Not Executed']} Pending</span>
-            <span class="badge badge-gray">${allStats['Not Applicable']} Not Applicable</span>
-        `;
-    }
-    const pocBadge = document.getElementById('pocBadge');
-    if (pocBadge) {
-        pocBadge.textContent = `${allStats.total} test cases`;
-        pocBadge.className = 'badge badge-info';
-    }
-    requestAnimationFrame(syncTestTableScrollProxy);
+          </thead>
+          <tbody>
+            ${features.map(f => `
+              <tr>
+                <td>${safe(f.name)}</td>
+                <td>${safe(f.type)}</td>
+                <td>${f.cycle || '—'}</td>
+                <td>${safe(f.status)}</td>
+                <td>${f.total || 0}</td>
+                <td>${f.executed || 0}</td>
+                <td>${f.passed || 0}</td>
+                <td>${f.failed || 0}</td>
+                <td>${f.blocked || 0}</td>
+                <td>${f.defects || 0}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `, 'Project QA Dashboard');
 }
 
-function attachColumnResizers(poc, columns) {
-    document.querySelectorAll('#testCaseHead .column-resizer').forEach(handle => {
-        handle.addEventListener('pointerdown', event => {
-            event.preventDefault();
-            const header = handle.parentElement;
-            const columnIndex = Number(header.dataset.columnIndex);
-            const column = columns[columnIndex];
-            const col = document.querySelectorAll('#testCaseColumns col')[columnIndex];
-            const startX = event.clientX;
-            const startWidth = col.getBoundingClientRect().width;
-            handle.classList.add('resizing');
-
-            const resize = moveEvent => {
-                const width = Math.max(72, Math.round(startWidth + moveEvent.clientX - startX));
-                col.style.width = `${width}px`;
-                const widths = [...document.querySelectorAll('#testCaseColumns col')];
-                document.getElementById('testCaseTable').style.width =
-                    `${widths.reduce((total, item) => total + item.getBoundingClientRect().width, 0)}px`;
-            };
-            const stopResize = () => {
-                document.removeEventListener('pointermove', resize);
-                document.removeEventListener('pointerup', stopResize);
-                handle.classList.remove('resizing');
-                requestAnimationFrame(syncTestTableScrollProxy);
-            };
-            document.addEventListener('pointermove', resize);
-            document.addEventListener('pointerup', stopResize, { once: true });
-        });
-    });
+function showFeatureStatus(status) {
+  featureStatusFilter = status;
+  go('featureStatus');
 }
 
-function getAutoColumnWidth(testCases, column) {
-    const table = document.getElementById('testCaseTable');
-    if (!table) return 160;
-    const kind = getColumnKind(column);
-    const minimum = kind === 'testNo' ? 76 : kind === 'status' ? 155 : 90;
-    const maximum = kind === 'testNo' ? 100 : kind === 'status' ? 185 :
-        kind === 'module' ? 260 : 300;
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (!context) return minimum;
-    const font = getComputedStyle(table).fontFamily;
-    context.font = `600 12px ${font}`;
-    let required = context.measureText(String(column).toUpperCase()).width + 44;
-    context.font = `13px ${font}`;
-    for (const testCase of testCases) {
-        const text = String(getTestCaseValue(testCase, column) ?? '');
-        for (const line of text.split(/\r?\n/)) {
-            required = Math.max(required, context.measureText(line).width + 34);
-        }
-    }
-    // Width follows content, with a cap so lengthy descriptions wrap.
-    return Math.ceil(Math.min(maximum, Math.max(minimum, required)));
+function featureStatus() {
+  const features = (
+    hasRole()
+      ? publicSummary().features
+      : publicData.features || []
+  ).filter(f => f.status === featureStatusFilter);
+
+  return shell(`
+    ${button('Back to Dashboard', "go('dashboard')")}
+    <div class="panel">
+      <h2>${safe(featureStatusFilter)} Features</h2>
+      <div class="tablewrap">
+        <table class="data">
+          <thead><tr>
+            <th>Feature</th><th>Type</th><th>Cycle</th>
+            <th>Test Cases</th><th>Executed</th>
+            <th>Defects</th><th>Blockers</th>
+          </tr></thead>
+          <tbody>
+            ${features.map(f => `
+              <tr>
+                <td>${safe(f.name)}</td>
+                <td>${safe(f.type)}</td>
+                <td>${f.cycle}</td>
+                <td>${f.total}</td>
+                <td>${f.executed}</td>
+                <td>${f.defects}</td>
+                <td>${f.blockedDefects}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `);
 }
 
-function syncTestTableScrollProxy() {
-    const proxy = document.getElementById('testTableScrollProxy');
-    const proxyContent = document.getElementById('testTableScrollProxyContent');
-    const container = document.querySelector('#pocView .table-container');
-    const pocView = document.getElementById('pocView');
-    const table = document.getElementById('testCaseTable');
-    if (!proxy || !proxyContent || !container || !pocView || !table) return;
+function defects() {
+  let rows = hasRole()
+    ? defectRows(data.features)
+    : (publicData.defectRows || []);
 
-    if (!tableScrollProxyInitialized) {
-        proxy.addEventListener('scroll', () => {
-            if (tableScrollSyncing) return;
-            tableScrollSyncing = true;
-            table.style.transform = `translateX(-${proxy.scrollLeft}px)`;
-            tableScrollSyncing = false;
-        });
-        window.addEventListener('resize', () => {
-            if (currentPocId && !document.activeElement?.isContentEditable) renderTestCases();
-            syncTestTableScrollProxy();
-        });
-        tableScrollProxyInitialized = true;
-    }
+  if (defectFilter === 'blocker') {
+    rows = rows.filter(r => r.blocker);
+  }
 
-    const visible = pocView.classList.contains('active') &&
-        table.style.display !== 'none' &&
-        table.offsetWidth > container.clientWidth + 1;
-    if (!visible) {
-        table.style.transform = '';
-        proxy.style.display = 'none';
-        return;
-    }
+  if (searchText) {
+    rows = rows.filter(r =>
+      Object.values(r).join(' ')
+        .toLowerCase()
+        .includes(searchText.toLowerCase())
+    );
+  }
 
-    const bounds = container.getBoundingClientRect();
-    proxy.style.left = `${bounds.left}px`;
-    proxy.style.width = `${bounds.width}px`;
-    proxyContent.style.width = `${table.offsetWidth}px`;
-    proxy.style.display = 'block';
-    proxy.scrollLeft = Math.min(proxy.scrollLeft, Math.max(0, table.offsetWidth - proxy.clientWidth));
-    table.style.transform =
-        `translateX(-${proxy.scrollLeft}px)`;
+  return shell(`
+    <div class="panel">
+      <h2>Defects Table — Current Cycles</h2>
+      <div class="controls">
+        <select onchange="defectFilter=this.value;render()">
+          <option value="all" ${defectFilter === 'all' ? 'selected' : ''}>
+            All defects
+          </option>
+          <option value="blocker"
+            ${defectFilter === 'blocker' ? 'selected' : ''}>
+            Blocked defects
+          </option>
+        </select>
+
+        <input placeholder="Search defects"
+          value="${safe(searchText)}"
+          oninput="searchText=this.value;render()">
+
+        ${button('Export defects', 'exportDefects()')}
+      </div>
+
+      <div class="tablewrap">
+        <table class="data">
+          <thead><tr>
+            <th>Feature</th><th>Cycle</th><th>Test Case</th>
+            <th>Defect Reference</th><th>Status</th>
+            <th>Remark</th><th>Blocker</th>
+            <th>Blocked Reason</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>
+                <td>${safe(r.feature)}</td>
+                <td>${r.cycle}</td>
+                <td>${safe(r.testId)}</td>
+                <td>
+                  ${r.url
+                    ? `<a href="${safe(r.url)}" target="_blank"
+                         rel="noopener noreferrer">${safe(r.defect)}</a>`
+                    : safe(r.defect) || '—'}
+                </td>
+                <td>${safe(r.status)}</td>
+                <td>${safe(r.remark)}</td>
+                <td>${r.blocker
+                  ? '<span class="tag blocked">Blocked Defect</span>'
+                  : 'No'}</td>
+                <td>${safe(r.blockedReason)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `, 'Total Defects');
 }
 
-function populateModuleFilter() {
-    const poc = getPoc(currentCustomerId, currentPocId);
-    const select = document.getElementById('moduleFilter');
-    if (!select) return;
-    const columns = poc ? getPocColumns(poc) : [];
-    const modules = [...new Set((poc?.testCases || []).map(tc => getFeatureName(tc, columns)).filter(Boolean))];
-    select.innerHTML = '<option value="all">All</option>' + modules.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
+function features() {
+  if (!hasRole()) return landing();
+
+  return shell(`
+    <div class="panel">
+      <div class="top">
+        <h2>Features</h2>
+        ${role === 'admin'
+          ? button('+ Add Feature', 'addFeature()', 'primary')
+          : ''}
+      </div>
+      <div class="tiles">
+        ${data.features.map(f => {
+          const c = latest(f);
+          return `
+            <button class="tile"
+              onclick="featureId='${f.id}';cycleId=null;go('feature')">
+              <strong>${safe(f.name)}</strong>
+              <small>${safe(f.type)} —
+                ${c ? 'Cycle ' + c.number + ' — ' + c.status : 'Not Started'}
+              </small>
+              <small>Baseline: ${f.baseline.length} cases</small>
+            </button>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `, 'Feature Workspace');
 }
 
-function renderExecutionControls(poc) {
-    const control = document.getElementById('pocExecutionControl');
-    if (!control) return;
-    if (!poc.executionStartedAt) {
-        control.innerHTML = '<button class="btn btn-primary" onclick="startTestExecution()"><i class="fas fa-play"></i> Start Execution</button>';
-        return;
-    }
-    const completed = poc.executionStatus === 'Completed';
-    control.innerHTML = `<div class="execution-state">
-        <span class="badge ${completed ? 'badge-pass' : 'badge-info'}">${completed ? 'Completed' : 'In Progress'}</span>
-    </div>`;
+async function addFeature() {
+  if (role !== 'admin') return;
+
+  const name = prompt('Feature name');
+  if (!name?.trim()) return;
+
+  const type = prompt(
+    'Execution type: Planned or Exploratory',
+    'Exploratory'
+  );
+
+  if (!['planned', 'exploratory'].includes((type || '').toLowerCase())) {
+    return alert('Enter Planned or Exploratory');
+  }
+
+  data.features.push({
+    id: id(),
+    name: name.trim(),
+    type: type[0].toUpperCase() + type.slice(1).toLowerCase(),
+    baseline: [],
+    cycles: []
+  });
+
+  await save();
+  render();
 }
 
-// ============================================================
-// INLINE EDITING
-// ============================================================
-function onCellEdit(el) {
-    const tcId = el.dataset.id;
-    const column = el.dataset.column;
-    const value = el.innerText.trim();
-    const poc = getPoc(currentCustomerId, currentPocId);
-    if (!poc) return;
-    const tc = poc.testCases.find(t => t.id === tcId);
-    if (tc && getTestCaseValue(tc, column) !== value) {
-        const kind = getColumnKind(column);
-        if (kind) tc[kind] = value;
-        tc.values = tc.values || {};
-        tc.values[column] = value;
-        if (poc.columnWidths) delete poc.columnWidths[column];
-        saveData();
-        renderTestCases();
-    }
-}
+function feature() {
+  const f = getFeature();
+  if (!f) return go('features');
 
-function onStatusChange(el) {
-    const poc = getPoc(currentCustomerId, currentPocId);
-    if (!poc?.executionStartedAt) {
-        toast('Start execution before updating test statuses.', 'info');
-        renderTestCases();
-        return;
-    }
-    const tcId = el.dataset.id;
-    const tc = poc.testCases.find(t => t.id === tcId);
-    if (tc && !hasTestCaseResults(tc, getPocColumns(poc))) {
-        toast('Fill Expected Result and Actual Result before updating the test status.', 'info');
-        renderTestCases();
-        return;
-    }
-    const value = el.value;
-    if (tc) {
-        tc.status = value;
-        const statusColumn = getPocColumns(poc).find(column => getColumnKind(column) === 'status');
-        if (statusColumn) {
-            tc.values = tc.values || {};
-            tc.values[statusColumn] = value;
-        }
-        updateExecutionState(poc);
-        saveData();
-        renderTestCases();
-    }
-}
+  const c = latest(f);
 
-function startTestExecution() {
-    const poc = getPoc(currentCustomerId, currentPocId);
-    if (!poc || !poc.testCases.length) {
-        toast('Add test cases before starting execution.', 'error');
-        return;
-    }
-    if (poc.executionStartedAt) return;
-    poc.executionStartedAt = new Date().toISOString();
-    updateExecutionState(poc);
-    saveData();
-    renderTestCases();
-    toast(poc.executionStatus === 'Completed' ? 'Execution completed: all test cases already have final statuses.' : 'Test execution started.', 'success');
-}
+  return shell(`
+    ${button('Back to Features', "go('features')")}
 
-function showAddColumnModal() {
-    if (!isAdmin) {
-        toast('Only Admin users can add columns.', 'error');
-        return;
-    }
-    openModal('Add Table Column', `
-        <div class="form-group">
-            <label>Column Header</label>
-            <input type="text" id="newColumnName" placeholder="e.g. Build Version" maxlength="80">
+    <div class="panel">
+      <div class="top">
+        <h2>${safe(f.name)}
+          <span class="tag">${safe(f.type)}</span>
+        </h2>
+        <div class="actions">
+          ${button('Add Baseline Case', 'addBaseline()')}
+          ${button('Import Excel', 'chooseImport()')}
+          ${button('Export All Cycles', 'exportCycles()')}
+          ${role === 'admin'
+            ? button('Delete Feature', 'deleteFeature()')
+            : ''}
         </div>
-    `, () => {
-        if (!isAdmin) {
-            toast('Only Admin users can add columns.', 'error');
-            return false;
-        }
-        const name = document.getElementById('newColumnName').value.trim();
-        const poc = getPoc(currentCustomerId, currentPocId);
-        if (!poc) return false;
-        if (!name) {
-            toast('Enter a column header.', 'error');
-            return false;
-        }
-        const columns = [...getPocColumns(poc)];
-        if (getColumnKind(name) === 'status' || getColumnKind(name) === 'testNo') {
-            toast('Status and Sr. No. are required table columns.', 'error');
-            return false;
-        }
-        if (columns.some(column => column.toLowerCase() === name.toLowerCase())) {
-            toast('That column already exists.', 'error');
-            return false;
-        }
-        poc.columns = [...columns, name];
-        saveData();
-        renderTestCases();
-        toast(`Column "${name}" added.`, 'success');
-    });
+      </div>
+
+      <p>Master baseline: <b>${f.baseline.length}</b> cases.</p>
+
+      <div class="controls">
+        ${button('Start New Cycle', 'startCycle()', 'primary')}
+        ${c ? button('Open Latest Cycle',
+          "cycleId=latest(getFeature()).id;go('cycle')") : ''}
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Cycle History</h3>
+      <div class="tablewrap">
+        <table class="data">
+          <thead><tr>
+            <th>Cycle</th><th>Started</th><th>Completed</th>
+            <th>Status</th><th>Selected</th>
+            <th>Executed</th><th>Action</th>
+          </tr></thead>
+          <tbody>
+            ${f.cycles.map(c => {
+              const n = counts(c.cases);
+              return `<tr>
+                <td>${c.number}</td>
+                <td>${safe(c.startedAt)}</td>
+                <td>${safe(c.completedAt || '—')}</td>
+                <td>${safe(c.status)}</td>
+                <td>${n.total}</td>
+                <td>${n.executed}</td>
+                <td>${button('View',
+                  `cycleId='${c.id}';go('cycle')`)}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Master Baseline</h3>
+      ${baselineTable(f)}
+    </div>
+  `, 'Feature Summary');
 }
 
-function showDeleteColumnModal() {
-    if (!isAdmin) {
-        toast('Only Admin users can delete columns.', 'error');
-        return;
-    }
-    const poc = getPoc(currentCustomerId, currentPocId);
-    if (!poc) return;
-    const removableColumns = getPocColumns(poc).filter(column => !['status', 'testNo'].includes(getColumnKind(column)));
-    if (!removableColumns.length) {
-        toast('There are no removable columns.', 'info');
-        return;
-    }
-    openModal('Delete Table Column', `
-        <div class="form-group">
-            <label>Column to delete</label>
-            <select id="deleteColumnName">${removableColumns.map(column => `<option value="${escHtml(column)}">${escHtml(column)}</option>`).join('')}</select>
-            <p style="font-size:12px;color:var(--gray-500);margin-top:6px;">Status and Sr. No. are required and cannot be deleted.</p>
-        </div>
-    `, () => {
-        const name = document.getElementById('deleteColumnName').value;
-        const currentPoc = getPoc(currentCustomerId, currentPocId);
-        if (!currentPoc || !isAdmin) return false;
-        currentPoc.columns = getPocColumns(currentPoc).filter(column => column !== name);
-        currentPoc.testCases.forEach(testCase => {
-            if (testCase.values) delete testCase.values[name];
-            if (currentPoc.columnWidths) delete currentPoc.columnWidths[name];
-        });
-        saveData();
-        renderTestCases();
-        toast(`Column "${name}" deleted.`, 'info');
-    });
+function baselineTable(f) {
+  return `
+    <div class="tablewrap">
+      <table class="data">
+        <thead><tr>
+          <th>Test Case ID</th><th>Module</th>
+          <th>Scenario</th><th>Expected</th><th>Origin</th>
+        </tr></thead>
+        <tbody>
+          ${f.baseline.map(t => `<tr>
+            <td>${safe(t.testId)}</td>
+            <td>${safe(t.module)}</td>
+            <td>${safe(t.scenario)}</td>
+            <td>${safe(t.expected)}</td>
+            <td>${safe(t.origin)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
-// ============================================================
-// DEDICATED SEPARATE ADMIN IMPORT MENU (Upload Excel)
-// ============================================================
-function showAdminUploadModal() {
-    if (!isAdmin) {
-        toggleAdminMode();
-        return;
-    }
-    if (db.customers.length === 0) {
-        toast('Create a feature first, then import the workbook into it.', 'error');
-        return;
-    }
-    const customerOptions = db.customers.map(c => `
-        <option value="${c.id}" ${c.id === currentCustomerId ? 'selected' : ''}>${escHtml(c.name)}</option>
-    `).join('');
+async function deleteFeature() {
+  if (role !== 'admin') return;
 
-    openModal('Import Excel into Feature', `
-        <div class="form-group">
-            <label>Target Feature</label>
-            <select id="importCustomerSelect">
-                ${customerOptions}
-            </select>
-        </div>
-        <div class="form-group">
-            <label>Select file</label>
-            <input type="file" id="importFileInput" style="padding: 6px;">
-            <p style="font-size:12px;color:var(--gray-500);margin-top:6px;">
-                        Select any file. Spreadsheet files supported by the importer are read; all rows and worksheets go into one module named after the file, inside the selected feature.
-            </p>
-        </div>
-    `, () => {
-        const select = document.getElementById('importCustomerSelect');
-        const fileInput = document.getElementById('importFileInput');
-        const file = fileInput.files[0];
+  if (!confirm('Permanently delete this feature and every cycle?')) {
+    return;
+  }
 
-        if (!file) {
-            toast('Please choose a file to upload.', 'error');
-            return false;
-        }
-
-        const targetCustomer = getCustomer(select.value);
-        if (!targetCustomer) {
-            toast('Select an existing feature before importing.', 'error');
-            return false;
-        }
-
-        executeExcelImport(file, targetCustomer);
-        return true;
-    });
-
+  data.features = data.features.filter(f => f.id !== featureId);
+  await save();
+  go('features');
 }
 
-function executeExcelImport(file, customer) {
+async function addBaseline() {
+  const f = getFeature();
+  if (!f || !hasRole()) return;
+
+  const testId = prompt('Unique Test Case ID');
+  if (!testId?.trim()) return;
+
+  if (f.baseline.some(t =>
+    t.testId.toLowerCase() === testId.trim().toLowerCase()
+  )) {
+    return alert('Test Case ID already exists');
+  }
+
+  const module = prompt('Module', '') || '';
+  const scenario = prompt('Scenario', '') || '';
+
+  f.baseline.push(blankCase(testId.trim(), module, scenario));
+  await save();
+  render();
+}
+
+function startCycle() {
+  const f = getFeature();
+  if (!f || !hasRole()) return;
+
+  if (active(f)) {
+    return alert('Complete the active cycle before starting a new one.');
+  }
+
+  if (f.type === 'Planned' && !f.baseline.length) {
+    return alert('Planned testing requires baseline test cases.');
+  }
+
+  selected = new Set(f.baseline.map(t => t.id));
+  go('selection');
+}
+
+function selection() {
+  const f = getFeature();
+  if (!f) return go('features');
+
+  const previous = new Map(
+    (f.cycles.at(-1)?.cases || []).map(t => [t.id, t])
+  );
+
+  return shell(`
+    ${button('Back to Feature', "go('feature')")}
+
+    <div class="panel">
+      <h2>Select Test Cases for Cycle ${f.cycles.length + 1}</h2>
+      <p class="muted">
+        Select all, failed, blocked, or specific test cases.
+        New cycles reset execution fields but retain defect references.
+      </p>
+
+      <div class="controls">
+        ${button('Select All', "selectBy('all')")}
+        ${button('Failed', "selectBy('Fail')")}
+        ${button('Blocked', "selectBy('Blocked')")}
+        ${button('Failed + Blocked', "selectBy('both')")}
+        ${button('Clear Selection', "selectBy('none')")}
+      </div>
+
+      <div class="tablewrap">
+        <table class="data">
+          <thead><tr>
+            <th>Select</th><th>Test Case ID</th>
+            <th>Module</th><th>Scenario</th>
+            <th>Previous Status</th>
+          </tr></thead>
+          <tbody>
+            ${f.baseline.map(t => `<tr>
+              <td><input type="checkbox"
+                ${selected.has(t.id) ? 'checked' : ''}
+                onchange="toggleSelection('${t.id}',this.checked)">
+              </td>
+              <td>${safe(t.testId)}</td>
+              <td>${safe(t.module)}</td>
+              <td>${safe(t.scenario)}</td>
+              <td>${safe(previous.get(t.id)?.status || '—')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="controls">
+        ${button('Start Cycle', 'createCycle()', 'primary')}
+      </div>
+    </div>
+  `);
+}
+
+function selectBy(which) {
+  const f = getFeature();
+
+  const previous = new Map(
+    (f.cycles.at(-1)?.cases || []).map(t => [t.id, t])
+  );
+
+  selected = new Set(
+    f.baseline.filter(t =>
+      which === 'all' ||
+      (which === 'both' &&
+        ['Fail', 'Blocked'].includes(previous.get(t.id)?.status)) ||
+      previous.get(t.id)?.status === which
+    ).map(t => t.id)
+  );
+
+  if (which === 'none') selected.clear();
+  render();
+}
+
+function toggleSelection(key, checked) {
+  if (checked) selected.add(key);
+  else selected.delete(key);
+}
+
+async function createCycle() {
+  const f = getFeature();
+  if (!f || !hasRole() || active(f)) return;
+
+  if (f.type === 'Planned' && !selected.size) {
+    return alert('Select at least one test case for Planned testing.');
+  }
+
+  const number = f.cycles.length + 1;
+
+  const c = {
+    id: id(),
+    number,
+    startedAt: today(),
+    completedAt: '',
+    completionRemark: '',
+    status: 'In Progress',
+    cases: f.baseline
+      .filter(t => selected.has(t.id))
+      .map(resetCase)
+  };
+
+  f.cycles.push(c);
+  cycleId = c.id;
+
+  await save();
+  go('cycle');
+}
+
+function cycle() {
+  const f = getFeature();
+  const c = getCycle();
+
+  if (!f || !c) return go('feature');
+
+  const n = counts(c.cases);
+  const editable = c.status === 'In Progress';
+
+  return shell(`
+    ${button('Back to Feature', "go('feature')")}
+
+    <div class="panel">
+      <div class="top">
+        <h2>${safe(f.name)} — Cycle ${c.number}</h2>
+        <span class="tag">${safe(c.status)}</span>
+      </div>
+
+      <div class="summary">
+        <span>Started: ${safe(c.startedAt)}</span>
+        <span>Added/Selected: ${n.total}</span>
+        <span>Executed: ${n.executed}</span>
+        <span>Passed: ${n.passed}</span>
+        <span>Failed: ${n.failed}</span>
+        <span>Blocked: ${n.blocked}</span>
+      </div>
+
+      <div class="controls">
+        ${editable
+          ? button('+ New Test Case', 'addCycleCase()', 'primary')
+          : ''}
+        ${editable ? button('Import Excel', 'chooseImport()') : ''}
+        ${editable
+          ? button('Complete Cycle', 'completeCycle()', 'primary')
+          : ''}
+        ${button('Export All Cycles', 'exportCycles()')}
+      </div>
+
+      ${!editable ? `
+        <p>Completed: ${safe(c.completedAt)}</p>
+        <p>Remark: ${safe(c.completionRemark)}</p>
+      ` : ''}
+    </div>
+
+    <div class="panel">
+      <h3>Test Cases</h3>
+      <p class="muted">
+        Changes save when a field loses focus.
+      </p>
+      <div class="tablewrap">
+        <table class="data">
+          <thead><tr>
+            ${fields.map(k => `<th>${labels[k]}</th>`).join('')}
+          </tr></thead>
+          <tbody>
+            ${c.cases.map(t => `<tr>
+              ${fields.map(k =>
+                `<td>${cell(t, k, editable)}</td>`
+              ).join('')}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `, 'Test Cycle Execution');
+}
+
+function cell(t, key, editable) {
+  const value = t[key] || '';
+
+  if (!editable) {
+    if (key === 'defect' && /^https:\/\//i.test(value)) {
+      return `<a href="${safe(value)}" target="_blank"
+        rel="noopener noreferrer">${safe(value)}</a>`;
+    }
+    return safe(value);
+  }
+
+  if (key === 'status') {
+    return `<select onchange="editCase('${t.id}','status',this.value,this)">
+      ${STATUS.map(s => `<option value="${safe(s)}"
+        ${s === value ? 'selected' : ''}>${safe(s)}</option>`
+      ).join('')}
+    </select>`;
+  }
+
+  if (key === 'testId') return safe(value);
+
+  if ([
+    'scenario', 'steps', 'expected', 'actual',
+    'remark', 'blockedReason'
+  ].includes(key)) {
+    return `<textarea onblur="editCase('${t.id}','${key}',this.value,this)"
+      >${safe(value)}</textarea>`;
+  }
+
+  return `<input value="${safe(value)}"
+    onblur="editCase('${t.id}','${key}',this.value,this)">`;
+}
+
+async function editCase(tcId, key, value, element) {
+  const f = getFeature();
+  const c = getCycle();
+  const t = c?.cases.find(x => x.id === tcId);
+
+  if (!t || c.status !== 'In Progress') return;
+
+  if (
+    key === 'status' &&
+    value === 'Blocked' &&
+    !t.blockedReason.trim()
+  ) {
+    alert('Enter a Blocked Reason before selecting Blocked.');
+    element.value = t.status;
+    return;
+  }
+
+  t[key] = value;
+
+  if (key === 'status' && value !== 'Blocked') {
+    t.blockedReason = '';
+  }
+
+  if (['module', 'scenario', 'steps', 'expected', 'defect'].includes(key)) {
+    const base = f.baseline.find(x => x.id === tcId);
+    if (base) base[key] = value;
+  }
+
+  try {
+    await save();
+  } catch (error) {
+    alert('Save failed: ' + error.message);
+  }
+
+  if (key === 'status') render();
+}
+
+async function addCycleCase() {
+  const f = getFeature();
+  const c = getCycle();
+
+  if (c?.status !== 'In Progress') return;
+
+  const testId = prompt('Unique Test Case ID');
+  if (!testId?.trim()) return;
+
+  if (f.baseline.some(t =>
+    t.testId.toLowerCase() === testId.trim().toLowerCase()
+  )) {
+    return alert('Test Case ID already exists in baseline.');
+  }
+
+  const module = prompt('Module', '') || '';
+  const scenario = prompt('Scenario', '') || '';
+
+  const t = blankCase(testId.trim(), module, scenario);
+  t.origin = `Added in Test Cycle ${c.number}`;
+
+  f.baseline.push(clone(t));
+  c.cases.push(t);
+
+  await save();
+  render();
+}
+
+async function completeCycle() {
+  const c = getCycle();
+  if (!c || c.status !== 'In Progress') return;
+
+  const n = counts(c.cases);
+
+  const remark = prompt(
+    `Complete Cycle ${c.number}?\n` +
+    `${n.pending} Not Executed and ${n.blocked} Blocked remain.\n` +
+    'Enter completion remark (required):'
+  );
+
+  if (!remark?.trim()) return;
+
+  if (!confirm('Confirm completion? This cycle becomes read-only.')) {
+    return;
+  }
+
+  c.status = 'Completed';
+  c.completedAt = today();
+  c.completionRemark = remark.trim();
+
+  await save();
+  render();
+}
+
+// ---------------- Excel Import ----------------
+
+function chooseImport() {
+  if (!hasRole()) return;
+
+  const f = getFeature();
+  if (!f) return alert('Open a feature first.');
+
+  $('uploadInput').click();
+}
+
+function normalize(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+const headerAliases = {
+  testId: ['testcaseid', 'testid', 'testcase', 'srno', 'serialno'],
+  module: ['module', 'feature'],
+  scenario: ['scenario', 'testscenario', 'description'],
+  steps: ['executionstep', 'executionsteps', 'steps', 'procedure'],
+  expected: ['expectedresult', 'expectedbehavior', 'expected'],
+  actual: ['actualresult', 'actualbehavior', 'actual'],
+  remark: ['remark', 'comment', 'comments'],
+  defect: ['defect', 'defectreference', 'defectnumber',
+    'bugid', 'defectlink'],
+  blockedReason: ['blockedreason', 'blockerreason'],
+  status: ['status', 'teststatus']
+};
+
+function parseExcel(file) {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = function (e) {
-        try {
-            const workbook = XLSX.read(e.target.result, { type: 'array' });
-            const importColumns = [];
-            const importRows = [];
-            for (const sheetName of workbook.SheetNames) {
-                const sheet = workbook.Sheets[sheetName];
-                const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-                const headerRow = findImportHeaderRow(rawRows);
-                if (!headerRow) {
-                    toast(`Upload rejected: sheet "${sheetName}" must have a header row containing Status and at least one test-case column within its first 20 rows.`, 'error');
-                    return;
-                }
-                const sourceHeaders = headerRow.headers;
-                const headers = [];
-                sourceHeaders.forEach(header => {
-                    if (!header) return;
-                    let uniqueHeader = header;
-                    let suffix = 2;
-                    while (headers.includes(uniqueHeader)) uniqueHeader = `${header} (${suffix++})`;
-                    headers.push(uniqueHeader);
-                });
 
-                const rows = rawRows.slice(headerRow.rowIndex + 1).filter(row => row.some(value => String(value ?? '').trim() !== ''))
-                    .map(row => {
-                        const entry = {};
-                        let headerIndex = 0;
-                        sourceHeaders.forEach((header, sourceIndex) => {
-                            if (!header) return;
-                            const uniqueHeader = headers[headerIndex++];
-                            entry[uniqueHeader] = row[sourceIndex] ?? '';
-                        });
-                        return entry;
-                    });
-                if (!rows.length) continue;
+    reader.onerror = () => reject(reader.error);
 
-                headers.forEach(header => {
-                    if (!importColumns.includes(header)) importColumns.push(header);
-                });
-                importRows.push(...rows);
-            }
-            if (!importRows.length) {
-                toast('Excel file contains no test cases to import.', 'error');
-                return;
+    reader.onload = () => {
+      try {
+        const workbook = XLSX.read(reader.result, { type: 'array' });
+        const entries = [];
+
+        for (const name of workbook.SheetNames) {
+          const rows = XLSX.utils.sheet_to_json(
+            workbook.Sheets[name],
+            { defval: '', raw: false }
+          );
+
+          if (!rows.length) continue;
+
+          const headers = Object.keys(rows[0]);
+          const map = {};
+
+          for (const key of fields) {
+            const matches = headers.filter(h =>
+              headerAliases[key].includes(normalize(h))
+            );
+
+            if (matches.length > 1) {
+              throw Error('Ambiguous columns for ' + labels[key]);
             }
 
-            const moduleName = file.name.replace(/\.(xlsx|xls|csv)$/i, '').trim() || 'Imported Module';
-            if (!db.customers.some(existing => existing.id === customer.id)) {
-                db.customers.push(customer);
-            }
-            const poc = createOrGetPoc(customer, moduleName, importColumns);
-            const colMap = detectColumns(importColumns);
-            const mergedColumns = Array.isArray(poc.columns) && poc.columns.length
-                ? [...poc.columns]
-                : poc.testCases.length ? [...DEFAULT_TEST_COLUMNS] : [...importColumns];
-            importColumns.forEach(column => {
-                if (!mergedColumns.includes(column)) mergedColumns.push(column);
-            });
-            poc.columns = mergedColumns;
-            importRows.forEach((row, index) => {
-                poc.testCases.push(rowToTestCase(row, colMap, poc.testCases.length + index + 1, importColumns));
-            });
-            updateExecutionState(poc);
+            if (matches.length) map[key] = matches[0];
+          }
 
-            saveData();
-            showCustomer(customer.id);
-            renderSidebar();
-            toast(`Successfully imported ${importRows.length} test cases into one module: ${moduleName}.`, 'success');
-        } catch (err) {
-            console.error('Import error:', err);
-            toast('Unable to import this file. Choose a supported spreadsheet file. ' + err.message, 'error');
+          if (!map.testId) {
+            throw Error(`Sheet ${name} needs a Test Case ID column.`);
+          }
+
+          if (!map.scenario) {
+            throw Error(`Sheet ${name} needs a Scenario column.`);
+          }
+
+          for (const row of rows) {
+            if (!String(row[map.testId] || '').trim()) continue;
+
+            const entry = {};
+
+            for (const key of fields) {
+              entry[key] = map[key]
+                ? String(row[map[key]] ?? '').trim()
+                : '';
+            }
+
+            entries.push(entry);
+          }
         }
+
+        resolve(entries);
+      } catch (error) {
+        reject(error);
+      }
     };
-    reader.onerror = () => {
-        console.error('File read error:', reader.error);
-        toast('Unable to read the selected file.', 'error');
-    };
+
     reader.readAsArrayBuffer(file);
+  });
 }
 
-// --- Helpers for Excel import ---
-function rowToTestCase(row, colMap, testNo, headers) {
-    const excelTestNo = colMap.testNo && row[colMap.testNo] !== undefined
-        ? String(row[colMap.testNo]).trim()
-        : testNo;
-    const status = normalizeStatus(String(row[colMap.status] || 'Not Executed').trim());
-    const values = {};
-    headers.forEach(header => { values[header] = String(row[header] ?? '').trim(); });
-    return {
-        id: genId(),
-        testNo: excelTestNo || testNo,
-        module: String(row[colMap.module] || '').trim(),
-        scenario: String(row[colMap.scenario] || '').trim(),
-        execStep: String(row[colMap.execStep] || '').trim(),
-        expectedBehavior: String(row[colMap.expected] || '').trim(),
-        actualBehavior: String(row[colMap.actual] || '').trim(),
-        comment: String(row[colMap.comment] || '').trim(),
-        status,
-        values
-    };
-}
+async function importExcel(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
 
-function createOrGetPoc(customer, pocName, columns) {
-    let poc = customer.pocs.find(p => p.name.toLowerCase() === pocName.toLowerCase());
-    if (!poc) {
-        poc = { id: genId(), name: pocName, columns: [...columns], testCases: [] };
-        customer.pocs.push(poc);
-    }
-    return poc;
-}
+  if (!file) return;
 
-function detectColumns(headers) {
-    const lower = headers.map(h => h.toLowerCase());
-    function find(keywords) {
-        for (const kw of keywords) {
-            const idx = lower.findIndex(h => h.includes(kw));
-            if (idx !== -1) return headers[idx];
-        }
-        return null;
-    }
-    return {
-        testNo:   find(['sr. no.', 'sr no', 'serial no', 'serial number', 'test no', 'test number']),
-        module:   find(['module', 'component', 'feature', 'area']) || headers[1] || '',
-        scenario: find(['scenario', 'test case', 'testcase', 'description', 'title', 'name']) || headers[2] || '',
-        execStep: find(['exec', 'step', 'procedure', 'action', 'steps']) || headers[3] || '',
-        expected: find(['expected', 'expect']) || headers[4] || '',
-        actual:   find(['actual', 'result', 'observed']) || headers[5] || '',
-        comment:  find(['comment', 'note', 'remark', 'observation']) || headers[6] || '',
-        status:   find(['status'])
-    };
-}
+  const f = getFeature();
+  if (!f || !hasRole()) return;
 
-function normalizeStatus(s) {
-    const l = s.toLowerCase();
-    if (l.includes('not applicable') || l === 'n/a' || l === 'na') return 'Not Applicable';
-    if (l.includes('partially pass')) return 'Partially Pass';
-    if (l.includes('pass') || l === 'p' || l === 'yes' || l === 'ok') return 'Pass';
-    if (l.includes('fail') || l === 'f' || l === 'no' || l === 'nok') return 'Fail';
-    if (l.includes('block')) return 'Blocked';
-    if (l.includes('progress') || l.includes('wip')) return 'In Progress';
-    return 'Not Executed';
-}
+  const c = getCycle();
 
-// ============================================================
-// CRUD OPERATIONS
-// ============================================================
+  if (c && c.status === 'Completed' && screen === 'cycle') {
+    return alert('Cannot import into a completed cycle.');
+  }
 
-// --- Feature ---
-function showAddCustomerModal() {
-    openModal('Add Feature', `
-        <div class="form-group">
-            <label>Feature Name</label>
-            <input type="text" id="modalInput1" placeholder="e.g. Inventory" autofocus>
-        </div>
-    `, () => {
-        const name = document.getElementById('modalInput1').value.trim();
-        if (!name) { toast('Please enter a name', 'error'); return false; }
-        const slug = (name || 'client').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'client';
-        const accessKey = slug + '_' + Math.random().toString(36).substring(2, 7);
-        const newCust = { id: genId(), name, accessKey, pocs: [] };
-        db.customers.push(newCust);
-        saveData();
-        renderSidebar();
-        showCustomer(newCust.id);
-        toast(`Feature "${name}" created! Link ready to share.`, 'success');
-    });
-}
+  try {
+    const entries = await parseExcel(file);
+    const unique = new Map();
 
-function renameCurrentCustomer() {
-    if (!isAdmin) {
-        toggleAdminMode();
-        return;
-    }
-    const customer = getCustomer(currentCustomerId);
-    if (!customer) {
-        toast('Feature not found.', 'error');
-        return;
+    for (const row of entries) {
+      const key = row.testId.toLowerCase();
+
+      if (unique.has(key)) {
+        throw Error('Duplicate Test Case ID: ' + row.testId);
+      }
+
+      unique.set(key, row);
     }
 
-    openModal('Edit Feature Name', `
-        <div class="form-group">
-            <label for="editFeatureName">Feature Name</label>
-            <input type="text" id="editFeatureName" value="${escHtml(customer.name)}" maxlength="120" autofocus>
-        </div>
-    `, () => {
-        const input = document.getElementById('editFeatureName');
-        const name = input ? input.value.trim() : '';
-        if (!name) {
-            toast('Please enter a feature name.', 'error');
-            return false;
+    const existing = new Map(
+      f.baseline.map(t => [t.testId.toLowerCase(), t])
+    );
+
+    const adds = [...unique.values()].filter(
+      t => !existing.has(t.testId.toLowerCase())
+    ).length;
+
+    const updates = unique.size - adds;
+
+    if (!confirm(
+      `Import ${unique.size} cases?\n` +
+      `${adds} new, ${updates} existing.\n` +
+      'Existing execution results will be preserved.'
+    )) return;
+
+    for (const row of unique.values()) {
+      let t = existing.get(row.testId.toLowerCase());
+
+      if (!t) {
+        t = blankCase(row.testId, row.module, row.scenario);
+        t.origin = c
+          ? `Added in Test Cycle ${c.number}`
+          : 'Imported to Baseline';
+
+        f.baseline.push(t);
+        existing.set(row.testId.toLowerCase(), t);
+      }
+
+      for (const key of [
+        'module', 'scenario', 'steps', 'expected', 'defect'
+      ]) {
+        if (row[key]) t[key] = row[key];
+      }
+
+      if (c && c.status === 'In Progress') {
+        let current = c.cases.find(x => x.id === t.id);
+
+        if (!current) {
+          current = resetCase(t);
+          c.cases.push(current);
         }
-        customer.name = name;
-        saveData();
-        renderSidebar();
-        renderDashboard();
-        if (currentCustomerId === customer.id) {
-            document.getElementById('customerTitle').textContent = customer.name;
+
+        for (const key of [
+          'module', 'scenario', 'steps', 'expected', 'defect'
+        ]) {
+          if (row[key]) current[key] = row[key];
         }
-        toast('Feature name updated.', 'success');
-    });
-}
-
-function deleteCurrentCustomer() {
-    if (!isAdmin) { toggleAdminMode(); return; }
-    if (!currentCustomerId) return;
-    const c = getCustomer(currentCustomerId);
-    if (!confirm(`Delete feature "${c.name}" and all its modules & test cases?`)) return;
-    db.customers = db.customers.filter(c => c.id !== currentCustomerId);
-    saveData();
-    renderSidebar();
-    showDashboard();
-    toast('Feature deleted', 'info');
-}
-
-// --- Module ---
-function showAddPocModal() {
-    openModal('Add Module', `
-        <div class="form-group">
-            <label>Module Name</label>
-            <input type="text" id="modalInput1" placeholder="e.g. Static Replenishment" autofocus>
-        </div>
-    `, () => {
-        const name = document.getElementById('modalInput1').value.trim();
-        if (!name) { toast('Please enter a name', 'error'); return false; }
-        const customer = getCustomer(currentCustomerId);
-        customer.pocs.push({ id: genId(), name, testCases: [] });
-        saveData();
-        renderPocGrid();
-        renderSidebar();
-        toast(`Module "${name}" added!`, 'success');
-    });
-}
-
-function renameCurrentPoc() {
-    renamePoc(currentCustomerId, currentPocId);
-}
-
-function renamePoc(customerId, pocId) {
-    if (!isAdmin) {
-        toggleAdminMode();
-        return;
-    }
-    const customer = getCustomer(customerId);
-    const poc = getPoc(customerId, pocId);
-    if (!customer || !poc) {
-        toast('Module not found.', 'error');
-        return;
+      }
     }
 
-    openModal('Edit Module Name', `
-        <div class="form-group">
-            <label for="editModuleName">Module Name</label>
-            <input type="text" id="editModuleName" value="${escHtml(poc.name)}" maxlength="120" autofocus>
-        </div>
-    `, () => {
-        const input = document.getElementById('editModuleName');
-        const name = input ? input.value.trim() : '';
-        if (!name) {
-            toast('Please enter a module name.', 'error');
-            return false;
-        }
-        poc.name = name;
-        saveData();
-        renderPocGrid();
-        renderDashboard();
-        if (currentCustomerId === customerId && currentPocId === pocId) {
-            document.getElementById('pocTitle').textContent = `${customer.name} → ${poc.name}`;
-        }
-        toast('Module name updated.', 'success');
-    });
+    await save();
+
+    alert(
+      `Imported: ${adds} new, ${updates} matched.\n` +
+      'No duplicate Test Case IDs created.'
+    );
+
+    render();
+  } catch (error) {
+    alert('Import rejected: ' + error.message);
+  }
 }
 
-function deleteCurrentPoc() {
-    if (!isAdmin) { toggleAdminMode(); return; }
-    if (!currentPocId) return;
-    const poc = getPoc(currentCustomerId, currentPocId);
-    if (!confirm(`Delete module "${poc.name}" and all its test cases?`)) return;
-    const customer = getCustomer(currentCustomerId);
-    customer.pocs = customer.pocs.filter(p => p.id !== currentPocId);
-    saveData();
-    showCustomer(currentCustomerId);
-    renderSidebar();
-    toast('Module deleted', 'info');
+// ---------------- Excel Export ----------------
+
+function exportCycles() {
+  const f = getFeature();
+  if (!f) return;
+
+  const workbook = XLSX.utils.book_new();
+
+  const summary = f.cycles.map(c => ({
+    Feature: f.name,
+    Type: f.type,
+    Cycle: c.number,
+    Started: c.startedAt,
+    Completed: c.completedAt,
+    Status: c.status,
+    Remark: c.completionRemark,
+    ...counts(c.cases)
+  }));
+
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet(
+      summary.length
+        ? summary
+        : [{ Feature: f.name, Note: 'No cycles yet' }]
+    ),
+    'Summary'
+  );
+
+  for (const c of f.cycles) {
+    const rows = c.cases.map(t =>
+      Object.fromEntries(
+        [...fields, 'origin'].map(key => [
+          labels[key] || 'Origin',
+          t[key] || ''
+        ])
+      )
+    );
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(
+        rows.length ? rows : [{ Note: 'No test cases' }]
+      ),
+      `Cycle ${c.number}`.slice(0, 31)
+    );
+  }
+
+  XLSX.writeFile(
+    workbook,
+    `${f.name.replace(/[^a-z0-9_-]/gi, '_')}_All_Cycles.xlsx`
+  );
 }
 
-// --- Test Case ---
-function showAddTestCaseModal() {
-    const poc = getPoc(currentCustomerId, currentPocId);
-    const nextNo = poc ? Math.max(0, ...poc.testCases.map(testCase => Number(testCase.testNo) || 0)) + 1 : 1;
-    openModal('Add Test Case', `
-        <div class="form-group"><label>Test No.</label><input type="number" id="tcNo" value="${nextNo}"></div>
-        <div class="form-group"><label>Module</label><input type="text" id="tcModule" placeholder="e.g. Authentication"></div>
-        <div class="form-group"><label>Scenario</label><textarea id="tcScenario" placeholder="e.g. Login with valid credentials"></textarea></div>
-        <div class="form-group"><label>Execution Step</label><textarea id="tcStep" placeholder="e.g. 1. Open app  2. Enter credentials  3. Click Login"></textarea></div>
-        <div class="form-group"><label>Expected Behavior</label><textarea id="tcExpected" placeholder="e.g. User is redirected to dashboard"></textarea></div>
-    `, () => {
-        const poc = getPoc(currentCustomerId, currentPocId);
-        poc.testCases.push({
-            id: genId(),
-            testNo: parseInt(document.getElementById('tcNo').value) || poc.testCases.length + 1,
-            module: document.getElementById('tcModule').value.trim(),
-            scenario: document.getElementById('tcScenario').value.trim(),
-            execStep: document.getElementById('tcStep').value.trim(),
-            expectedBehavior: document.getElementById('tcExpected').value.trim(),
-            actualBehavior: '',
-            comment: '',
-            status: 'Not Executed'
-        });
-        updateExecutionState(poc);
-        saveData();
-        renderTestCases();
-        populateModuleFilter();
-        toast('Test case added!', 'success');
-    });
+function exportDefects() {
+  const source = hasRole()
+    ? defectRows(data.features)
+    : (publicData.defectRows || []);
+
+  const rows = source
+    .filter(r => defectFilter !== 'blocker' || r.blocker)
+    .map(r => ({
+      Feature: r.feature,
+      Cycle: r.cycle,
+      'Test Case': r.testId,
+      'Defect Reference': r.defect,
+      Status: r.status,
+      Remark: r.remark,
+      Blocker: r.blocker ? 'Yes' : 'No',
+      'Blocked Reason': r.blockedReason
+    }));
+
+  const workbook = XLSX.utils.book_new();
+
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet(
+      rows.length ? rows : [{ Note: 'No defects' }]
+    ),
+    'Defects'
+  );
+
+  XLSX.writeFile(workbook, 'QA_Current_Cycle_Defects.xlsx');
 }
 
-function deleteTestCase(tcId) {
-    if (!isAdmin) { toggleAdminMode(); return; }
-    const poc = getPoc(currentCustomerId, currentPocId);
-    if (!poc) return;
-    poc.testCases = poc.testCases.filter(t => t.id !== tcId);
-    const testNoColumns = getPocColumns(poc).filter(column => getColumnKind(column) === 'testNo');
-    [...poc.testCases].sort((a, b) => {
-        const first = Number(a.testNo);
-        const second = Number(b.testNo);
-        if (Number.isFinite(first) && Number.isFinite(second)) return first - second;
-        return String(a.testNo ?? '').localeCompare(String(b.testNo ?? ''), undefined, { numeric: true });
-    }).forEach((testCase, index) => {
-        testCase.testNo = index + 1;
-        if (testNoColumns.length) {
-            testCase.values = testCase.values || {};
-            testNoColumns.forEach(column => {
-                testCase.values[column] = index + 1;
-            });
-        }
-    });
-    updateExecutionState(poc);
-    saveData();
-    renderTestCases();
-    toast('Test case deleted', 'info');
+// ---------------- Application Initialization ----------------
+
+function render() {
+  const root = $('app');
+  if (!root) return;
+
+  const views = {
+    landing,
+    login,
+    dashboard,
+    features,
+    feature,
+    selection,
+    cycle,
+    defects,
+    featureStatus
+  };
+
+  root.innerHTML = (views[screen] || landing)() + `
+    <input id="uploadInput" type="file"
+      accept=".xlsx,.xls,.csv"
+      hidden onchange="importExcel(event)">
+  `;
 }
 
-// ============================================================
-// EXCEL EXPORT (Always accessible on execution page)
-// ============================================================
-function exportPocToExcel() {
-    const poc = getPoc(currentCustomerId, currentPocId);
-    const customer = getCustomer(currentCustomerId);
-    if (!poc || poc.testCases.length === 0) { toast('No test cases to export', 'error'); return; }
+auth.onAuthStateChanged(user => {
+  const admin = user?.email?.toLowerCase() ===
+    APP_CONFIG.adminEmail.toLowerCase();
 
-    const columns = getPocColumns(poc);
-    const testCases = [...poc.testCases].sort((a, b) => {
-        const first = Number(a.testNo);
-        const second = Number(b.testNo);
-        if (Number.isFinite(first) && Number.isFinite(second)) return first - second;
-        return String(a.testNo ?? '').localeCompare(String(b.testNo ?? ''), undefined, { numeric: true });
-    });
-    const data = testCases.map(testCase => Object.fromEntries(
-        columns.map(column => [column, getTestCaseValue(testCase, column)])
-    ));
+  const tester = user?.email?.toLowerCase() ===
+    APP_CONFIG.testerEmail.toLowerCase();
 
-    const ws = XLSX.utils.json_to_sheet(data);
-    ws['!cols'] = columns.map(column => ({ wch: Math.max(10, Math.min(36, column.length + 4)) }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, poc.name.slice(0, 31));
-    XLSX.writeFile(wb, `${customer.name}_${poc.name}_TestResults.xlsx`);
-    toast('Excel exported successfully!', 'success');
-}
+  role = user?.emailVerified
+    ? (admin ? 'admin' : tester ? 'tester' : 'guest')
+    : 'guest';
 
-// ============================================================
-// FULL DATA BACKUP / RESTORE (JSON)
-// ============================================================
-function exportAllDataJSON() {
-    const json = JSON.stringify(db, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `poc-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast('JSON backup downloaded!', 'success');
-}
+  if (hasRole()) {
+    bindPrivate();
+  } else if (unsub) {
+    unsub();
+    unsub = null;
+    data = { features: [] };
+  }
 
-function importAllDataJSON(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function (e) {
-        try {
-            const imported = JSON.parse(e.target.result);
-            if (!imported.customers || !Array.isArray(imported.customers)) {
-                toast('Invalid backup file', 'error');
-                return;
-            }
-            if (!confirm(`This will REPLACE all current data with the backup (${imported.customers.length} features). Continue?`)) return;
-            db = imported;
-            saveData();
-            renderSidebar();
-            showDashboard();
-            toast('Data restored from backup!', 'success');
-        } catch (err) {
-            toast('Error reading backup: ' + err.message, 'error');
-        }
-    };
-    reader.readAsText(file);
-    event.target.value = '';
-}
-
-// ============================================================
-// MODAL HELPERS
-// ============================================================
-function openModal(title, bodyHtml, onSave) {
-    document.getElementById('modalTitle').textContent = title;
-    document.getElementById('modalBody').innerHTML = bodyHtml;
-    document.getElementById('modalOverlay').classList.add('active');
-    modalCallback = onSave;
-    setTimeout(() => {
-        const firstInput = document.querySelector('#modalBody input, #modalBody select, #modalBody textarea');
-        if (firstInput) firstInput.focus();
-    }, 100);
-}
-
-function closeModal() {
-    document.getElementById('modalOverlay').classList.remove('active');
-    modalCallback = null;
-}
-
-function modalSave() {
-    if (modalCallback) {
-        const result = modalCallback();
-        if (result !== false) closeModal();
-    }
-}
-
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && document.getElementById('modalOverlay').classList.contains('active')) {
-        const active = document.activeElement;
-        if (active && active.tagName !== 'TEXTAREA') {
-            e.preventDefault();
-            modalSave();
-        }
-    }
-    if (e.key === 'Escape') closeModal();
+  render();
 });
 
-// ============================================================
-// TOAST NOTIFICATIONS
-// ============================================================
-function toast(message, type = 'info') {
-    const container = document.getElementById('toastContainer');
-    const icons = { success: 'fa-check-circle', error: 'fa-exclamation-circle', info: 'fa-info-circle' };
-    const el = document.createElement('div');
-    el.className = `toast ${type}`;
-    el.innerHTML = `<i class="fas ${icons[type] || icons.info}"></i> ${escHtml(message)}`;
-    container.appendChild(el);
-    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 3000);
-}
-
-// ============================================================
-// UTILS
-// ============================================================
-function escHtml(str) {
-    if (!str) return '';
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-}
+bindPublic();
+render();

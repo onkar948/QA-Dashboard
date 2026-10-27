@@ -1,0 +1,848 @@
+
+/* ============================================================
+   QA BUG TRACKER V2
+   Additional Stylesheet
+   Works with existing style.css
+   ============================================================ */
+
+/* ------------------------------
+   Global V2 variables
+------------------------------ */
+
+:root {
+  --v2-primary: #4f46e5;
+  --v2-primary-dark: #4338ca;
+  --v2-success: #16a34a;
+  --v2-danger: #dc2626;
+  --v2-warning: #f59e0b;
+  --v2-info: #0284c7;
+
+  --v2-bg: #f8fafc;
+  --v2-surface: #ffffff;
+  --v2-border: #e2e8f0;
+  --v2-text: #1e293b;
+  --v2-muted: #64748b;
+
+  --v2-radius: 10px;
+  --v2-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  --v2-shadow-hover: 0 8px 22px rgba(15, 23, 42, 0.12);
+}
+
+#app {
+  min-height: 100vh;
+  background: var(--v2-bg);
+  color: var(--v2-text);
+  font-family: -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#app *,
+#app *::before,
+#app *::after {
+  box-sizing: border-box;
+}
+
+#app button,
+#app input,
+#app select,
+#app textarea {
+  font: inherit;
+}
+
+#app button {
+  cursor: pointer;
+}
+
+#app button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+#app :focus-visible {
+  outline: 3px solid rgba(79, 70, 229, 0.45);
+  outline-offset: 2px;
+}
+
+/* ------------------------------
+   Main application shell
+------------------------------ */
+
+#app .shell {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 24px;
+  min-height: 100vh;
+}
+
+#app .top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+#app .top h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--v2-text);
+  margin: 0;
+}
+
+#app .top h2 {
+  font-size: 20px;
+  font-weight: 650;
+  margin: 0;
+}
+
+#app .actions,
+#app .controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+#app .controls {
+  margin: 16px 0;
+}
+
+/* ------------------------------
+   Buttons
+------------------------------ */
+
+#app button.primary,
+#app button.secondary,
+#app button.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 36px;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+#app button.primary {
+  background: var(--v2-primary);
+  color: white;
+  border: 1px solid var(--v2-primary);
+}
+
+#app button.primary:hover {
+  background: var(--v2-primary-dark);
+}
+
+#app button.secondary {
+  background: white;
+  color: var(--v2-text);
+  border: 1px solid var(--v2-border);
+}
+
+#app button.secondary:hover {
+  background: #f1f5f9;
+}
+
+#app button.danger-button {
+  background: var(--v2-danger);
+  color: white;
+  border: 1px solid var(--v2-danger);
+}
+
+#app button.danger-button:hover {
+  background: #b91c1c;
+}
+
+#app button.link {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+}
+
+#app button.link:hover {
+  color: var(--v2-primary);
+}
+
+/* ------------------------------
+   Landing page
+------------------------------ */
+
+#app .landing {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 32px 20px;
+  background:
+    radial-gradient(
+      circle at 50% 10%,
+      rgba(79, 70, 229, 0.08),
+      transparent 45%
+    ),
+    var(--v2-bg);
+}
+
+#app .landing h1 {
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 750;
+  color: var(--v2-primary);
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+#app .landing > p {
+  font-size: 16px;
+  margin-bottom: 30px;
+}
+
+#app .landing .tiles {
+  width: 100%;
+  max-width: 950px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* ------------------------------
+   Cards and tiles
+------------------------------ */
+
+#app .tiles {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(220px, 1fr)
+  );
+  gap: 18px;
+  margin: 18px 0 26px;
+}
+
+#app .tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  min-height: 145px;
+  width: 100%;
+  background: var(--v2-surface);
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  box-shadow: var(--v2-shadow);
+  color: var(--v2-text);
+  text-align: left;
+  transition:
+    transform 0.2s,
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+
+#app button.tile:hover {
+  transform: translateY(-3px);
+  border-color: var(--v2-primary);
+  box-shadow: var(--v2-shadow-hover);
+}
+
+#app .tile strong {
+  display: block;
+  font-size: 26px;
+  font-weight: 750;
+  color: var(--v2-primary);
+  line-height: 1.2;
+}
+
+#app .tile small {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--v2-muted);
+}
+
+#app .tile .link strong {
+  color: var(--v2-danger);
+}
+
+#app .tile .link b {
+  color: var(--v2-danger);
+  font-size: 15px;
+}
+
+#app .tile .link + .link {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--v2-border);
+}
+
+/* ------------------------------
+   Login
+------------------------------ */
+
+#app .login {
+  max-width: 430px;
+  margin: 12vh auto 0;
+  padding: 32px;
+}
+
+#app .login h2 {
+  font-size: 24px;
+  margin-bottom: 10px;
+}
+
+#app .login form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 22px;
+}
+
+#app .login input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--v2-border);
+  border-radius: 7px;
+  background: white;
+}
+
+#app .login button {
+  width: 100%;
+}
+
+#app .login .danger {
+  margin-top: 12px;
+}
+
+/* ------------------------------
+   Panels
+------------------------------ */
+
+#app .panel {
+  background: var(--v2-surface);
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  box-shadow: var(--v2-shadow);
+  padding: 22px;
+  margin-bottom: 22px;
+  min-width: 0;
+}
+
+#app .panel h2 {
+  font-size: 20px;
+  margin-bottom: 14px;
+}
+
+#app .panel h3 {
+  font-size: 17px;
+  margin-bottom: 14px;
+}
+
+#app .panel p {
+  margin-bottom: 10px;
+}
+
+#app .muted {
+  color: var(--v2-muted);
+}
+
+#app .danger {
+  color: var(--v2-danger);
+}
+
+/* ------------------------------
+   Status badges
+------------------------------ */
+
+#app .tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+#app .tag.blocked {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+#app .tag.completed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+#app .tag.progress {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+#app .tag.pending {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+#app .tag.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+#app .tag.passed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+/* ------------------------------
+   Project Dashboard
+------------------------------ */
+
+#app .shell > .tiles {
+  margin-top: 24px;
+}
+
+#app .summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid var(--v2-border);
+  border-radius: 8px;
+  margin: 16px 0;
+}
+
+#app .summary span {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: white;
+  border: 1px solid var(--v2-border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+#app .summary span:nth-child(3) {
+  color: var(--v2-success);
+}
+
+#app .summary span:nth-child(5) {
+  color: var(--v2-danger);
+}
+
+/* ------------------------------
+   Data tables
+------------------------------ */
+
+#app .tablewrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  border: 1px solid var(--v2-border);
+  border-radius: 8px;
+  margin-top: 14px;
+  background: white;
+}
+
+#app table.data {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  border-spacing: 0;
+  table-layout: auto;
+  font-size: 13px;
+}
+
+#app table.data thead {
+  background: #1e293b;
+  color: white;
+}
+
+#app table.data th {
+  padding: 12px 13px;
+  text-align: left;
+  font-weight: 650;
+  font-size: 12px;
+  white-space: nowrap;
+  border-bottom: 1px solid #334155;
+}
+
+#app table.data td {
+  padding: 11px 13px;
+  vertical-align: top;
+  border-bottom: 1px solid #edf2f7;
+  color: var(--v2-text);
+  overflow-wrap: anywhere;
+}
+
+#app table.data tbody tr:nth-child(even) {
+  background: #fafbfc;
+}
+
+#app table.data tbody tr:hover {
+  background: #eef2ff;
+}
+
+#app table.data tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+#app table.data td a {
+  color: var(--v2-primary);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+#app table.data td a:hover {
+  color: var(--v2-primary-dark);
+}
+
+/* ------------------------------
+   Test execution table
+------------------------------ */
+
+#app table.data textarea {
+  width: 100%;
+  min-width: 170px;
+  min-height: 75px;
+  padding: 9px;
+  resize: vertical;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: white;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#app table.data input:not([type="checkbox"]),
+#app table.data select {
+  width: 100%;
+  min-width: 135px;
+  padding: 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: white;
+  font-size: 13px;
+}
+
+#app table.data input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--v2-primary);
+  cursor: pointer;
+}
+
+#app table.data textarea:focus,
+#app table.data input:focus,
+#app table.data select:focus {
+  border-color: var(--v2-primary);
+  outline: 2px solid rgba(79, 70, 229, 0.15);
+}
+
+/* ------------------------------
+   Filters and search
+------------------------------ */
+
+#app .controls input,
+#app .controls select {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--v2-border);
+  border-radius: 7px;
+  background: white;
+  color: var(--v2-text);
+}
+
+#app .controls input {
+  min-width: 190px;
+}
+
+#app .controls select {
+  min-width: 150px;
+}
+
+#app .controls input:focus,
+#app .controls select:focus {
+  border-color: var(--v2-primary);
+}
+
+/* ------------------------------
+   Defects table
+------------------------------ */
+
+#app .panel:has(table.data) {
+  overflow: visible;
+}
+
+#app .tablewrap:has(a[href]) td a {
+  word-break: break-all;
+}
+
+#app table.data td .tag.blocked {
+  font-size: 11px;
+  padding: 4px 9px;
+}
+
+#app table.data td:nth-child(6),
+#app table.data td:nth-child(8) {
+  max-width: 350px;
+  white-space: pre-wrap;
+}
+
+/* ------------------------------
+   Feature and cycle history
+------------------------------ */
+
+#app .panel .top {
+  margin-bottom: 14px;
+}
+
+#app .panel .top .actions {
+  justify-content: flex-end;
+}
+
+#app .panel > .controls {
+  margin-top: 18px;
+}
+
+#app .panel .tablewrap + .controls {
+  margin-top: 18px;
+}
+
+#app .panel .tiles {
+  margin-top: 16px;
+}
+
+/* ------------------------------
+   Empty states
+------------------------------ */
+
+#app .empty-state-v2 {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--v2-muted);
+  border: 1px dashed var(--v2-border);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+#app .empty-state-v2 strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--v2-text);
+}
+
+/* ------------------------------
+   Utility classes
+------------------------------ */
+
+#app .text-success {
+  color: var(--v2-success);
+}
+
+#app .text-danger {
+  color: var(--v2-danger);
+}
+
+#app .text-warning {
+  color: #b45309;
+}
+
+#app .text-info {
+  color: var(--v2-info);
+}
+
+#app .text-center {
+  text-align: center;
+}
+
+#app .text-right {
+  text-align: right;
+}
+
+#app .font-bold {
+  font-weight: 700;
+}
+
+#app .nowrap {
+  white-space: nowrap;
+}
+
+/* ------------------------------
+   Responsive layout
+------------------------------ */
+
+@media (max-width: 1024px) {
+  #app .shell {
+    padding: 18px;
+  }
+
+  #app .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #app .landing .tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  #app .panel {
+    padding: 18px;
+  }
+}
+
+@media (max-width: 768px) {
+  #app .shell {
+    padding: 14px;
+  }
+
+  #app .top {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  #app .top h1 {
+    font-size: 21px;
+  }
+
+  #app .landing .tiles {
+    grid-template-columns: 1fr;
+    max-width: 420px;
+  }
+
+  #app .tiles {
+    grid-template-columns: 1fr;
+  }
+
+  #app .tile {
+    min-height: 110px;
+    padding: 20px;
+  }
+
+  #app .tile strong {
+    font-size: 24px;
+  }
+
+  #app .panel {
+    padding: 15px;
+  }
+
+  #app .actions,
+  #app .controls {
+    width: 100%;
+    gap: 8px;
+  }
+
+  #app .controls input,
+  #app .controls select {
+    width: 100%;
+  }
+
+  #app .summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #app .summary span {
+    width: 100%;
+  }
+
+  #app .login {
+    margin-top: 7vh;
+    padding: 22px;
+  }
+
+  #app table.data {
+    min-width: 750px;
+  }
+}
+
+@media (max-width: 480px) {
+  #app .landing h1 {
+    font-size: 28px;
+  }
+
+  #app .shell {
+    padding: 10px;
+  }
+
+  #app .panel {
+    padding: 12px;
+  }
+
+  #app .tile {
+    min-height: 100px;
+  }
+
+  #app .top .actions button {
+    flex: 1;
+  }
+
+  #app table.data {
+    font-size: 12px;
+  }
+
+  #app table.data th,
+  #app table.data td {
+    padding: 9px;
+  }
+}
+
+/* ------------------------------
+   Print and export-friendly layout
+------------------------------ */
+
+@media print {
+  #app {
+    background: white;
+  }
+
+  #app .shell {
+    max-width: none;
+    padding: 0;
+  }
+
+  #app .panel,
+  #app .tile {
+    box-shadow: none;
+    border: 1px solid #ddd;
+  }
+
+  #app .actions,
+  #app .controls,
+  #app button {
+    display: none !important;
+  }
+
+  #app .tablewrap {
+    overflow: visible;
+  }
+
+  #app table.data {
+    min-width: 0;
+    width: 100%;
+    font-size: 10px;
+  }
+
+  #app table.data th,
+  #app table.data td {
+    padding: 5px;
+  }
+}
